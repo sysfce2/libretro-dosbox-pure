@@ -143,7 +143,7 @@ else ifneq ($(findstring Haiku,$(shell uname -s)),)
   ifneq ($(findstring BePC,$(shell uname -m)),)
     CXX   ?= g++-x86
   else
-    CXX     ?= g++
+    CXX   ?= g++
   endif
 else
   OUTNAME := dosbox_pure_libretro.so
