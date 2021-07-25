@@ -1548,8 +1548,9 @@ static void DBP_StartOnScreenKeyboard()
 	static struct
 	{
 		float mx, my, dx, dy, jx, jy, kx, ky, mspeed;
+		Bit32u pressed_time;
 		KBD_KEYS hovered_key, pressed_key;
-		bool toggled_keys[KBD_rightshift-KBD_leftalt == 5 ? 6 : -1];
+		bool held[KBD_LAST];
 	} osk;
 	struct OSKFunc
 	{
@@ -1557,20 +1558,13 @@ static void DBP_StartOnScreenKeyboard()
 		{
 			float fac = (RDOSGFXwidth < KWIDTH ? (RDOSGFXwidth - 10) / (float)KWIDTH : (RDOSGFXwidth < 400 ? 1.f : 2.f));
 			int osky = (int)(RDOSGFXheight / fac) - 3 - 65;
+			memset(&osk, 0, sizeof(osk));
 			if (!osk.mx && !osk.my)
 			{
 				osk.mx = (float)(KWIDTH/2);
 				osk.my = (float)(osky + 32);
 			}
-			osk.dx = osk.dy = osk.jx = osk.jy = osk.kx = osk.ky = 0;
 			osk.mspeed = 2.f;
-			osk.hovered_key = osk.pressed_key = KBD_NONE;
-			osk.toggled_keys[KBD_leftalt   -KBD_leftalt] = !!dbp_keys_down[KBD_leftalt   ];
-			osk.toggled_keys[KBD_rightalt  -KBD_leftalt] = !!dbp_keys_down[KBD_rightalt  ];
-			osk.toggled_keys[KBD_leftctrl  -KBD_leftalt] = !!dbp_keys_down[KBD_leftctrl  ];
-			osk.toggled_keys[KBD_rightctrl -KBD_leftalt] = !!dbp_keys_down[KBD_rightctrl ];
-			osk.toggled_keys[KBD_leftshift -KBD_leftalt] = !!dbp_keys_down[KBD_leftshift ];
-			osk.toggled_keys[KBD_rightshift-KBD_leftalt] = !!dbp_keys_down[KBD_rightshift];
 		}
 		enum { KWR = 10, KWTAB = 15, KWCAPS = 20, KWLS = 17, KWRSHIFT = 33, KWCTRL = 16, KWZERO = 22, KWBS = 28, KWSPACEBAR = 88, KWENTR = 18, KWPLUS };
 		enum { KXX = 100+KWR+2, SPACEFF = 109, KSPLIT = 255, KSPLIT1 = 192, KSPLIT2 = 234, KWIDTH = KSPLIT2 + KWR*4 + 2*3 };
@@ -1594,8 +1588,8 @@ static void DBP_StartOnScreenKeyboard()
 				{ KBD_leftshift,KBD_extra_lt_gt,KBD_z,KBD_x,KBD_c,KBD_v,KBD_b,KBD_n,KBD_m,KBD_comma,KBD_period,KBD_slash,KBD_rightshift    ,KBD_NONE,   KBD_NONE,KBD_up,KBD_NONE    ,KBD_NONE,KBD_kp1,KBD_kp2,KBD_kp3,KBD_kpenter },
 				{ KBD_leftctrl,KBD_NONE,KBD_leftalt,                        KBD_space,                 KBD_rightalt,KBD_NONE,KBD_rightctrl ,KBD_NONE,  KBD_left,KBD_down,KBD_right  ,KBD_NONE,KBD_kp0,KBD_kpperiod },
 			};
-			int thickness = (RDOSGFXwidth < 400 ? 1 : 2);
-			float fac = (RDOSGFXwidth < KWIDTH ? (RDOSGFXwidth - 10) / (float)KWIDTH : (RDOSGFXwidth < 400 ? 1.f : 2.f));
+			int thickness = (RDOSGFXwidth < (KWIDTH + 10) ? 1 : (RDOSGFXwidth - 10) / KWIDTH);
+			float fac = (RDOSGFXwidth < KWIDTH ? (RDOSGFXwidth - 10) / (float)KWIDTH : (float)thickness);
 			int oskx = (int)(RDOSGFXwidth / fac / 2) - (KWIDTH / 2);
 			int osky = (osk.my < (RDOSGFXheight / fac / 2) ? 3 : (int)(RDOSGFXheight / fac) - 3 - 65);
 
@@ -1609,6 +1603,12 @@ static void DBP_StartOnScreenKeyboard()
 			if (osk.my > (RDOSGFXheight / fac) - 3) osk.my = (float)((RDOSGFXheight / fac) - 3);
 			int cX = (int)((oskx+osk.mx)*fac); // mx is related to oskx
 			int cY = (int)((     osk.my)*fac); // my is related to screen!
+
+			if (osk.pressed_key && (DBP_GetTicks() - osk.pressed_time) > 500)
+			{
+				osk.held[osk.pressed_key] = true;
+				osk.pressed_key = KBD_NONE;
+			}
 
 			// Draw keys and check hovered state
 			osk.hovered_key = KBD_NONE;
@@ -1646,7 +1646,7 @@ static void DBP_StartOnScreenKeyboard()
 					if (hovered) osk.hovered_key = kbd_key;
 
 					unsigned col = (osk.pressed_key == kbd_key ? 0x808888FF : 
-							(kbd_key >= KBD_leftalt && kbd_key <= KBD_rightshift && osk.toggled_keys[kbd_key-KBD_leftalt] ? 0x80A0A000 :
+							(osk.held[kbd_key] ? 0x80A0A000 :
 							(hovered ? 0x800000FF :
 							0x80FF0000)));
 
@@ -1710,17 +1710,26 @@ static void DBP_StartOnScreenKeyboard()
 				case DBPET_MOUSEDOWN: case DBPET_JOY1DOWN: case DBPET_JOY2DOWN: case_ADDKEYDOWN:
 					if (osk.pressed_key == KBD_NONE && osk.hovered_key != KBD_NONE)
 					{
-						if (osk.hovered_key >= KBD_leftalt && osk.hovered_key <= KBD_rightshift)
+						if (osk.held[osk.hovered_key])
 						{
-							KEYBOARD_AddKey(osk.hovered_key, (osk.toggled_keys[osk.hovered_key-KBD_leftalt] ^= true));
-							break;
+							osk.held[osk.hovered_key] = false;
+							KEYBOARD_AddKey(osk.hovered_key, false);
 						}
-						osk.pressed_key = osk.hovered_key;
-						KEYBOARD_AddKey(osk.pressed_key, true);
+						else if (osk.hovered_key >= KBD_leftalt && osk.hovered_key <= KBD_rightshift)
+						{
+							osk.held[osk.hovered_key] = true;
+							KEYBOARD_AddKey(osk.hovered_key, true);
+						}
+						else
+						{
+							osk.pressed_time = DBP_GetTicks();
+							osk.pressed_key = osk.hovered_key;
+							KEYBOARD_AddKey(osk.pressed_key, true);
+						}
 					}
 					break;
 				case DBPET_MOUSEUP: case DBPET_JOY1UP: case DBPET_JOY2UP: case_ADDKEYUP:
-					if (osk.pressed_key != KBD_NONE && (osk.hovered_key < KBD_leftalt || osk.hovered_key > KBD_rightshift))
+					if (osk.pressed_key != KBD_NONE)
 					{
 						KEYBOARD_AddKey(osk.pressed_key, false);
 						osk.pressed_key = KBD_NONE;
@@ -1778,7 +1787,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.13";
+	info->library_version  = "0.14";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|m3u|m3u8";
