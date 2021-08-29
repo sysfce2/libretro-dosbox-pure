@@ -326,7 +326,7 @@ static retro_core_option_v2_definition option_defs[] =
 	},
 	{
 		"dosbox_pure_cpu_type",
-		"CPU Type", NULL,
+		"CPU Type (restart required)", NULL,
 		"Emulated CPU type. Auto is the fastest choice." "\n"
 			"Games that require specific CPU type selection:" "\n"
 			"386 (prefetch): X-Men: Madness in The Murderworld, Terminator 1, Contra, Fifa International Soccer 1994" "\n"
@@ -345,7 +345,7 @@ static retro_core_option_v2_definition option_defs[] =
 	},
 	{
 		"dosbox_pure_cpu_core",
-		"Advanced > CPU Core", NULL,
+		"Advanced > CPU Core (restart required)", NULL,
 		"Emulation method (DOSBox CPU core) used.", NULL,
 		"System",
 		{
@@ -372,9 +372,13 @@ static retro_core_option_v2_definition option_defs[] =
 		"You can also force it to open by holding shift or L2/R2 when selecting 'Restart'." "\n\n", NULL, //end of System > Advanced section
 		"System",
 		{
+#ifndef STATIC_LINKING
 			{ "5", "Show at start, shut down core 5 seconds after auto started game exit" },
 			{ "3", "Show at start, shut down core 3 seconds after auto started game exit" },
 			{ "0", "Show at start, shut down core immediately after auto started game exit" },
+#else
+			{ "5", "Show at start, show again after game exit (default)" },
+#endif
 			{ "-1", "Always show menu on startup and after game exit, ignore auto start setting" },
 		},
 		"5"

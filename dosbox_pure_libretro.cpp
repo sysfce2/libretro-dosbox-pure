@@ -1383,6 +1383,7 @@ static void DBP_PureMenuProgram(Program** make)
 
 			RefreshFileList(true);
 
+			#ifndef STATIC_LINKING
 			if (on_finish && !always_show_menu && ((exe_count == 1 && fs_count <= 1) || use_autoboot))
 			{
 				if (dbp_menu_time == 0) { first_shell->exit = true; return; }
@@ -1397,6 +1398,7 @@ static void DBP_PureMenuProgram(Program** make)
 				if (!IdleLoop(CheckAnyPress, DBP_GetTicks() + (dbp_menu_time * 1000))) return;
 				result = 0;
 			}
+			#endif
 			if (on_finish)
 			{
 				// ran without auto start or only for a very short time (maybe crash), wait for user confirmation
@@ -1792,7 +1794,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.15";
+	info->library_version  = "0.16";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|m3u|m3u8";
@@ -2134,7 +2136,7 @@ static bool check_variables()
 {
 	struct Variables
 	{
-		static bool DosBoxSet(const char* section_name, const char* var_name, const char* new_value, bool disallow_in_game = false)
+		static bool DosBoxSet(const char* section_name, const char* var_name, const char* new_value, bool disallow_in_game = false, bool need_restart = false)
 		{
 			if (!control) return false;
 
@@ -2145,16 +2147,22 @@ static bool check_variables()
 			DBP_ASSERT(old_val != "PROP_NOT_EXIST");
 			if (!section || old_val == new_value) return false;
 
+			bool reInitSection = (dbp_state != DBPSTATE_BOOT);
 			if (disallow_in_game && dbp_game_running)
 			{
-				retro_notify(0, RETRO_LOG_ERROR, "Unable to change value while game is running");
-				return false;
+				retro_notify(0, RETRO_LOG_WARN, "Unable to change value while game is running");
+				reInitSection = false;
+			}
+			if (need_restart && reInitSection)
+			{
+				retro_notify(2000, RETRO_LOG_INFO, "Setting will be applied after restart");
+				reInitSection = false;
 			}
 
 			//log_cb(RETRO_LOG_INFO, "[DOSBOX] variable %s::%s updated from %s to %s\n", section_name, var_name, old_val.c_str(), new_value);
 			str += '=';
 			str += new_value;
-			if (dbp_state != DBPSTATE_BOOT)
+			if (reInitSection)
 			{
 				DBP_QueueEvent(DBPET_SET_VARIABLE, str, section);
 			}
@@ -2236,7 +2244,7 @@ static bool check_variables()
 	bool mem_use_extended = (atoi(mem) > 0);
 	Variables::DosBoxSet("dos", "xms", (mem_use_extended ? "true" : "false"), true);
 	Variables::DosBoxSet("dos", "ems", (mem_use_extended ? "true" : "false"), true);
-	Variables::DosBoxSet("dosbox", "memsize", (mem_use_extended ? mem : "16"), true);
+	Variables::DosBoxSet("dosbox", "memsize", (mem_use_extended ? mem : "16"), false, true);
 
 	// handle setting strings like on/yes/true/savestate or rewind
 	const char* savestate = Variables::RetroGet("dosbox_pure_savestate", "false");
@@ -2253,6 +2261,9 @@ static bool check_variables()
 		cycles = buf;
 	}
 	visibility_changed |= Variables::DosBoxSet("cpu", "cycles", cycles);
+
+	Variables::DosBoxSet("cpu", "core",    Variables::RetroGet("dosbox_pure_cpu_core", "auto"), false, true);
+	Variables::DosBoxSet("cpu", "cputype", Variables::RetroGet("dosbox_pure_cpu_type", "auto"), false, true);
 
 	const char* machine = Variables::RetroGet("dosbox_pure_machine", "svga");
 	if (dbp_last_machine != machine[0])
@@ -2285,8 +2296,6 @@ static bool check_variables()
 	}
 
 	Variables::DosBoxSet("render", "aspect",  Variables::RetroGet("dosbox_pure_aspect_correction", "false"));
-	Variables::DosBoxSet("cpu",    "core",    Variables::RetroGet("dosbox_pure_cpu_core",          "auto" ));
-	Variables::DosBoxSet("cpu",    "cputype", Variables::RetroGet("dosbox_pure_cpu_type",          "auto" ));
 
 	dbp_menu_time = (char)atoi(Variables::RetroGet("dosbox_pure_menu_time", "5"));
 
@@ -2937,8 +2946,15 @@ void retro_run(void)
 			if (!dbp_crash_message.empty()) // unexpected shutdown
 				DBP_Shutdown();
 			else if (dbp_state == DBPSTATE_EXITED) // expected shutdown
+			{
+				#ifndef STATIC_LINKING
 				environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, 0);
-
+				#else
+				// On statically linked platforms shutdown would exit the frontend, so don't do that. Just tint the screen red and sleep.
+				for (Bit8u *p = dosbox_buffers[dosbox_buffers_last], *pEnd = p + sizeof(dosbox_buffers[0]); p < pEnd; p += 56) p[2] = 255;
+				sleep_ms(10);
+				#endif
+			}
 			return;
 		}
 
