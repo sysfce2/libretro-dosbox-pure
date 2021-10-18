@@ -428,14 +428,11 @@ static void DBP_ThreadControl(DBP_ThreadCtlMode m)
 			semDoContinue.Post();
 			return;
 		case TCM_SHUTDOWN:
-			DBP_ThreadControl(TCM_PAUSE_FRAME);
+			dbp_pause_events = true;
+			semDidPause.Wait();
+			dbp_pause_events = dbp_frame_pending = false;
 			DBP_DOSBOX_ForceShutdown();
-			DBP_ThreadControl(TCM_RESUME_FRAME);
-			while (dbp_state != DBPSTATE_EXITED)
-			{
-				semDoContinue.Post();
-				semDidPause.Wait();
-			}
+			do { semDoContinue.Post(); semDidPause.Wait(); } while (dbp_state != DBPSTATE_EXITED);
 			return;
 	}
 }
@@ -792,13 +789,14 @@ bool GFX_StartUpdate(Bit8u*& pixels, Bitu& pitch)
 	DBP_Buffer& buf = dbp_buffers[buffer_active^1];
 	pixels = (Bit8u*)buf.video;
 	pitch = render.src.width * 4;
-	if (render.src.width != buf.width || render.src.height != buf.height)
+	float ratio = (render.aspect ? (float)render.src.ratio : (float)render.src.width / render.src.height);
+	if (ratio < 1) ratio *= 2; //because render.src.dblw is not reliable
+	if (ratio > 2) ratio /= 2; //because render.src.dblh is not reliable
+	if (buf.width != render.src.width || buf.height != render.src.height || buf.ratio != ratio)
 	{
 		buf.width = (Bit32u)render.src.width;
 		buf.height = (Bit32u)render.src.height;
-		buf.ratio = (float)buf.width / buf.height;
-		if (buf.ratio < 1) buf.ratio *= 2; //because render.src.dblw is not reliable
-		if (buf.ratio > 2) buf.ratio /= 2; //because render.src.dblh is not reliable
+		buf.ratio = ratio;
 	}
 	return true;
 }
@@ -924,6 +922,9 @@ static bool GFX_Events_AdvanceFrame()
 	if (!dbp_new_timing) return true;
 #endif
 
+	// With certain keyboard layouts, we can end up here during startup which we don't want to do anything further
+	if (dbp_state == DBPSTATE_BOOT) return true;
+
 	retro_time_t time_before = time_cb() - St.Paused;
 	St.Paused = 0;
 
@@ -955,10 +956,10 @@ static bool GFX_Events_AdvanceFrame()
 	}
 
 	// Skip evaluating the performance of this frame if the display mode has changed
-	double modeHash = render.src.ratio * render.src.fps * render.src.width * render.src.height * (double)vga.mode;
+	double modeHash = render.src.fps * render.src.width * render.src.height * (double)vga.mode;
 	if (modeHash != St.LastModeHash)
 	{
-		//log_cb(RETRO_LOG_INFO, "[DBPTIMERS@%4d] NEW VIDEO MODE %f|%f|%d|%d|%d|%d|\n", St.HistoryCursor, render.src.ratio, render.src.fps, (int)render.src.width, (int)render.src.height, (int)vga.mode);
+		//log_cb(RETRO_LOG_INFO, "[DBPTIMERS@%4d] NEW VIDEO MODE %f|%d|%d|%d|%d|\n", St.HistoryCursor, render.src.fps, (int)render.src.width, (int)render.src.height, (int)vga.mode);
 		St.LastModeHash = modeHash;
 		St.HistoryEmulator[HISTORY_SIZE-1] = 0;
 		St.HistoryCursor = 0;
@@ -2097,6 +2098,8 @@ static void DBP_StartOnScreenKeyboard()
 				case DBPET_MOUSESETSPEED: osk.mspeed = (val > 0 ? 4.f : 1.f); break;
 				case DBPET_MOUSERESETSPEED: osk.mspeed = 2.f; break;
 				case DBPET_ONSCREENKEYBOARD: case_CLOSEOSK:
+					osk.pressed_key = KBD_NONE;
+					memset(osk.held, 0, sizeof(osk.held));
 					DBP_KEYBOARD_ReleaseKeys();
 					dbp_gfx_intercept = NULL;
 					dbp_input_intercept = NULL;
@@ -2126,7 +2129,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.18";
+	info->library_version  = "0.19";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|m3u|m3u8";
@@ -2740,7 +2743,7 @@ static bool check_variables()
 
 	// Emulation options
 #ifndef DBP_REMOVE_OLD_TIMING
-	bool experimental_new_timing = (Variables::RetroGet("dosbox_pure_experimental_timing_mode", "legacy")[0] == 'n'); static bool lastent; if (experimental_new_timing != lastent) { retro_notify(2000, RETRO_LOG_INFO, "Setting will be applied after restart"); lastent^=1; }
+	bool experimental_new_timing = (Variables::RetroGet("dosbox_pure_experimental_timing_mode", "legacy")[0] == 'n'); static bool lastent, seenent; if (!seenent) { seenent = true; lastent = experimental_new_timing; } else if (experimental_new_timing != lastent) { retro_notify(2000, RETRO_LOG_INFO, "Setting will be applied after restart"); lastent^=1; }
 	Variables::RetroVisibility("dosbox_pure_force60fps", experimental_new_timing);
 	Variables::RetroVisibility("dosbox_pure_latency", experimental_new_timing);
 	Variables::RetroVisibility("dosbox_pure_auto_target", experimental_new_timing);
