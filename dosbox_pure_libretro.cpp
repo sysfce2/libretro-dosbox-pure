@@ -396,6 +396,7 @@ static void DBP_ThreadControl(DBP_ThreadCtlMode m)
 	switch (m)
 	{
 		case TCM_PAUSE_FRAME:
+			DBP_ASSERT(!dbp_pause_events);
 			if (!dbp_frame_pending || dbp_pause_events) return;
 			dbp_pause_events = true;
 			#ifdef DBP_ENABLE_WAITSTATS
@@ -428,9 +429,7 @@ static void DBP_ThreadControl(DBP_ThreadCtlMode m)
 			semDoContinue.Post();
 			return;
 		case TCM_SHUTDOWN:
-			dbp_pause_events = true;
-			semDidPause.Wait();
-			dbp_pause_events = dbp_frame_pending = false;
+			if (dbp_frame_pending) { dbp_pause_events = true; semDidPause.Wait(); dbp_pause_events = dbp_frame_pending = false; }
 			DBP_DOSBOX_ForceShutdown();
 			do { semDoContinue.Post(); semDidPause.Wait(); } while (dbp_state != DBPSTATE_EXITED);
 			return;
@@ -789,7 +788,8 @@ bool GFX_StartUpdate(Bit8u*& pixels, Bitu& pitch)
 	DBP_Buffer& buf = dbp_buffers[buffer_active^1];
 	pixels = (Bit8u*)buf.video;
 	pitch = render.src.width * 4;
-	float ratio = (render.aspect ? (float)render.src.ratio : (float)render.src.width / render.src.height);
+	float ratio = (float)render.src.width / render.src.height;
+	if (render.aspect) ratio /= (float)render.src.ratio;
 	if (ratio < 1) ratio *= 2; //because render.src.dblw is not reliable
 	if (ratio > 2) ratio /= 2; //because render.src.dblh is not reliable
 	if (buf.width != render.src.width || buf.height != render.src.height || buf.ratio != ratio)
@@ -825,11 +825,11 @@ void GFX_EndUpdate(const Bit16u *changedLines)
 	// Tell dosbox to draw the next frame completely, not just the scanlines that changed (could also issue GFX_CallBackRedraw)
 	render.scale.clearCache = true;
 
+	// frameskip is best to be modified in this function (otherwise it can be off by one)
+	dbp_framecount += 1 + render.frameskip.max;
+
 	if (dbp_new_timing)
 	{
-		// frameskip is best to be modified in this function
-		dbp_framecount += 1 + render.frameskip.max;
-
 		static unsigned last_throttle_mode;
 		if (last_throttle_mode != dbp_throttle.mode)
 		{
@@ -2129,7 +2129,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.19";
+	info->library_version  = "0.20";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|m3u|m3u8";
