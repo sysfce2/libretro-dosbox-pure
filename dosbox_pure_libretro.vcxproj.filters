@@ -116,13 +116,13 @@
       <Filter>src\fpu</Filter>
     </ClCompile>
     <ClCompile Include="src\gui\midi.cpp">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClCompile>
     <ClCompile Include="src\gui\render.cpp">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClCompile>
     <ClCompile Include="src\gui\render_scalers.cpp">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClCompile>
     <ClCompile Include="src\hardware\adlib.cpp">
       <Filter>src\hardware</Filter>
@@ -591,25 +591,25 @@
       <Filter>src\fpu</Filter>
     </ClInclude>
     <ClInclude Include="src\gui\midi_mt32.h">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClInclude>
     <ClInclude Include="src\gui\midi_retro.h">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClInclude>
     <ClInclude Include="src\gui\midi_tsf.h">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClInclude>
     <ClInclude Include="src\gui\render_glsl.h">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClInclude>
     <ClInclude Include="src\gui\render_loops.h">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClInclude>
     <ClInclude Include="src\gui\render_scalers.h">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClInclude>
     <ClInclude Include="src\gui\render_simple.h">
-      <Filter>src\hardware\gui</Filter>
+      <Filter>src\gui</Filter>
     </ClInclude>
     <ClInclude Include="src\hardware\adlib.h">
       <Filter>src\hardware</Filter>
@@ -653,6 +653,7 @@
     <Filter Include="src\cpu" />
     <Filter Include="src\dos" />
     <Filter Include="src\fpu" />
+    <Filter Include="src\gui" />
     <Filter Include="src\hardware\mame" />
     <Filter Include="src\hardware\serialport" />
     <Filter Include="src\hardware" />
@@ -660,6 +661,5 @@
     <Filter Include="src\misc" />
     <Filter Include="src\shell" />
     <Filter Include="src" />
-    <Filter Include="src\hardware\gui" />
   </ItemGroup>
 </Project>

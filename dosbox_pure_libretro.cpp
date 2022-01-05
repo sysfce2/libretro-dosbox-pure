@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2021 Bernhard Schelling
+ *  Copyright (C) 2020-2022 Bernhard Schelling
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -102,6 +102,7 @@ static Bit8u buffer_active;
 static struct DBP_Buffer { Bit32u video[SCALER_MAXWIDTH * SCALER_MAXHEIGHT], width, height; float ratio; } dbp_buffers[2];
 enum { DBP_MAX_SAMPLES = 4096 }; // twice amount of mixer blocksize (96khz @ 30 fps max)
 static int16_t dbp_audio[DBP_MAX_SAMPLES * 2]; // stereo
+static double dbp_audio_remain;
 static void(*dbp_gfx_intercept)(DBP_Buffer& buf);
 
 // DOSBOX DISC MANAGEMENT
@@ -121,6 +122,7 @@ enum DBP_Port_Device
 {
 	DBP_DEVICE_Disabled                = RETRO_DEVICE_NONE,
 	DBP_DEVICE_DefaultJoypad           = RETRO_DEVICE_JOYPAD,
+	DBP_DEVICE_DefaultAnalog           = RETRO_DEVICE_ANALOG,
 	DBP_DEVICE_BindGenericKeyboard     = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 0),
 	DBP_DEVICE_MouseLeftAnalog         = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 1),
 	DBP_DEVICE_MouseRightAnalog        = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 2),
@@ -1098,12 +1100,12 @@ static void DBP_PureMenuProgram(Program** make)
 	struct Menu : Program
 	{
 		Menu() : result(0), sel(0), exe_count(0), fs_count(0), scroll(0), mousex(0), mousey(0), joyx(0), joyy(0), init_autosel(0), init_autoskip(0), autoskip(0),
-			have_autoboot(false), use_autoboot(false), multidrive(false), open_ticks(DBP_GetTicks()) { }
+			have_autoboot(false), have_dosboxbat(false), use_autoboot(false), multidrive(false), open_ticks(DBP_GetTicks()) { }
 
 		~Menu() {}
 
 		int result, sel, exe_count, fs_count, scroll, mousex, mousey, joyx, joyy, init_autosel, init_autoskip, autoskip;
-		bool have_autoboot, use_autoboot, multidrive;
+		bool have_autoboot, have_dosboxbat, use_autoboot, multidrive;
 		Bit32u open_ticks;
 		std::vector<std::string> list;
 
@@ -1182,6 +1184,10 @@ static void DBP_PureMenuProgram(Program** make)
 				memcpy(autostr, "C:\\", 3);
 				safe_strncpy(autostr + 3, strrchr(dbp_content_path.c_str(), '#') + 1, DOS_PATHLENGTH + 16);
 			}
+			else if (have_dosboxbat)
+			{
+				memcpy(autostr, "C:\\DOSBOX.BAT", sizeof("C:\\DOSBOX.BAT"));
+			}
 			if (autostr[0])
 			{
 				for (std::string& name : list)
@@ -1225,6 +1231,7 @@ static void DBP_PureMenuProgram(Program** make)
 				delete insfile;
 				if (cmdlen != sizeof(cmd) || memcmp(cmd, "FILE \"", sizeof(cmd))) return;
 			}
+			if (isEXE && m->sel == ('C'-'A') && !memcmp(path, "DOSBOX.BAT", sizeof("DOSBOX.BAT"))) m->have_dosboxbat = true;
 			(isEXE ? m->exe_count : m->fs_count)++;
 
 			int insert_index;
@@ -1910,7 +1917,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.21";
+	info->library_version  = "0.22";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|m3u|m3u8";
@@ -2040,6 +2047,7 @@ static void refresh_input_binds(unsigned refresh_min_port = 0)
 				binds = BindsMouseRightAnalog;
 				break;
 			case DBP_DEVICE_DefaultJoypad:
+			case DBP_DEVICE_DefaultAnalog:
 				if (port == 0)
 				{
 					if (dbp_auto_mapping)
@@ -2162,7 +2170,7 @@ static void refresh_input_binds(unsigned refresh_min_port = 0)
 		if ((dbp_port_devices[port] & RETRO_DEVICE_MASK) == RETRO_DEVICE_KEYBOARD)
 			continue;
 
-		if (port == 0 && dbp_auto_mapping && dbp_port_devices[0] == DBP_DEVICE_DefaultJoypad)
+		if (port == 0 && dbp_auto_mapping && (dbp_port_devices[0] == DBP_DEVICE_DefaultJoypad || dbp_port_devices[0] == DBP_DEVICE_DefaultAnalog))
 			continue;
 
 		if (!dbp_bind_unused && dbp_port_devices[port] != DBP_DEVICE_BindGenericKeyboard)
@@ -2709,7 +2717,7 @@ static bool init_dosbox(const char* path, bool firsttime)
 
 				for (Bit32u idx = hash;; idx++)
 				{
-					if (!map_keys[idx &= (MAP_TABLE_SIZE-1)]) break;
+					if (!map_keys[idx %= MAP_TABLE_SIZE]) break;
 					if (map_keys[idx] != hash) continue;
 
 					static std::vector<Bit8u> static_buf;
@@ -3351,27 +3359,28 @@ void retro_run(void)
 	}
 
 	// mix audio
-	Bit32u numSamples, haveSamples = DBP_MIXER_DoneSamplesCount();
+	Bit32u haveSamples = DBP_MIXER_DoneSamplesCount(), mixSamples = 0; double numSamples;
 	if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD && dbp_throttle.rate < 1)
 		numSamples = haveSamples;
 	else if (dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD || dbp_throttle.mode == RETRO_THROTTLE_SLOW_MOTION || dbp_throttle.rate < 1)
-		numSamples = (Bit32u)(av_info.timing.sample_rate / av_info.timing.fps);
+		numSamples = (av_info.timing.sample_rate / av_info.timing.fps) + dbp_audio_remain;
 	else
-		numSamples = (Bit32u)(av_info.timing.sample_rate / dbp_throttle.rate);
+		numSamples = (av_info.timing.sample_rate / dbp_throttle.rate) + dbp_audio_remain;
 	if (numSamples && haveSamples)
 	{
-		numSamples = (numSamples > DBP_MAX_SAMPLES ? DBP_MAX_SAMPLES : (numSamples > haveSamples ? haveSamples : numSamples));
+		mixSamples = (numSamples > DBP_MAX_SAMPLES ? DBP_MAX_SAMPLES : (numSamples > haveSamples ? haveSamples : (Bit32u)numSamples));
 		if (dbp_latency == DBP_LATENCY_VARIABLE)
 		{
 			if (dbp_pause_events) DBP_ThreadControl(TCM_RESUME_FRAME); // can be paused by serialize
-			while (DBP_MIXER_DoneSamplesCount() < numSamples * 12 / 10) { dbp_lastrun = time_cb(); retro_sleep(0); } // buffer ahead a bit
+			while (DBP_MIXER_DoneSamplesCount() < mixSamples * 12 / 10) { dbp_lastrun = time_cb(); retro_sleep(0); } // buffer ahead a bit
 			DBP_ThreadControl(TCM_PAUSE_FRAME); 
 		}
-		MIXER_CallBack(0, (Bit8u*)dbp_audio, numSamples * 4);
+		MIXER_CallBack(0, (Bit8u*)dbp_audio, mixSamples * 4);
 		if (dbp_latency == DBP_LATENCY_VARIABLE)
 		{
 			DBP_ThreadControl(TCM_RESUME_FRAME);
 		}
+		dbp_audio_remain = (numSamples > mixSamples ? (numSamples - mixSamples) : 0);
 	}
 
 	if (dbp_latency == DBP_LATENCY_DEFAULT)
@@ -3380,7 +3389,7 @@ void retro_run(void)
 	}
 
 	// submit audio
-	audio_batch_cb(dbp_audio, numSamples);
+	if (mixSamples) audio_batch_cb(dbp_audio, mixSamples);
 
 	if (tpfActual)
 	{
