@@ -343,7 +343,6 @@ static void DBP_ThreadControl(DBP_ThreadCtlMode m)
 	switch (m)
 	{
 		case TCM_PAUSE_FRAME:
-			DBP_ASSERT(!dbp_pause_events);
 			if (!dbp_frame_pending || dbp_pause_events) return;
 			dbp_pause_events = true;
 			#ifdef DBP_ENABLE_WAITSTATS
@@ -402,6 +401,29 @@ static void DBP_ThreadControl(DBP_ThreadCtlMode m)
 	}
 }
 
+void DBP_SetRealModeCycles()
+{
+	if (cpu.pmode || CPU_CycleAutoAdjust || !(CPU_AutoDetermineMode & CPU_AUTODETERMINE_CYCLES) || render.frameskip.max > 1) return;
+
+	static const Bit16u Cycles1981to1993[1+1993-1981] = { 900, 1400, 1800, 2300, 2800, 3800, 4800, 6300, 7800, 14000, 21000, 27000, 44000 };
+	int year = (dbp_game_running ? dbp_content_year : 0);
+	CPU_CycleMax = 
+		(year <= 1970 ?  3000 : // Unknown year, dosbox default
+		(year <  1981 ?   500 : // Very early 8086/8088 CPU
+		(year >  1993 ? 60000 : // Pentium 90 MHz
+		Cycles1981to1993[year - 1981]))); // Matching speed for year
+
+	// Switch to dynamic core for newer real mode games 
+	if (CPU_CycleMax >= 8192 && (CPU_AutoDetermineMode & CPU_AUTODETERMINE_CORE))
+	{
+		#if (C_DYNAMIC_X86)
+		if (cpudecoder != CPU_Core_Dyn_X86_Run) { void CPU_Core_Dyn_X86_Cache_Init(bool); CPU_Core_Dyn_X86_Cache_Init(true); cpudecoder = CPU_Core_Dyn_X86_Run; }
+		#elif (C_DYNREC)
+		if (cpudecoder != CPU_Core_Dynrec_Run)  { void CPU_Core_Dynrec_Cache_Init(bool);  CPU_Core_Dynrec_Cache_Init(true);  cpudecoder = CPU_Core_Dynrec_Run;  }
+		#endif
+	}
+}
+
 static void DBP_UnlockSpeed(bool unlock, int start_frame_skip = 0)
 {
 	static Bit32s old_max;
@@ -425,9 +447,24 @@ static void DBP_UnlockSpeed(bool unlock, int start_frame_skip = 0)
 	else if (old_max)
 	{
 		// If we switched to protected mode while locked (likely at startup) with auto adjust cycles on, choose a reasonable base rate
-		CPU_CycleMax = (old_pmode != cpu.pmode && cpu.pmode && CPU_CycleAutoAdjust ? 200000 : old_max);
+		CPU_CycleMax = (old_pmode == cpu.pmode || !CPU_CycleAutoAdjust ? old_max : 20000);
 		render.frameskip.max = old_max = 0;
+		DBP_SetRealModeCycles();
 	}
+}
+
+static bool DBP_NeedFrameSkip(bool in_emulation)
+{
+	if ((in_emulation ? (dbp_throttle.rate > render.src.fps - 1) : (render.src.fps > dbp_throttle.rate - 1))
+		|| dbp_throttle.rate < 10 || dbp_latency == DBP_LATENCY_VARIABLE
+		|| dbp_throttle.mode == RETRO_THROTTLE_FRAME_STEPPING || dbp_throttle.mode == RETRO_THROTTLE_FAST_FORWARD
+		|| dbp_throttle.mode == RETRO_THROTTLE_SLOW_MOTION || dbp_throttle.mode == RETRO_THROTTLE_REWINDING) return false;
+	static float accum;
+	accum += (in_emulation ? (render.src.fps - dbp_throttle.rate) : (dbp_throttle.rate - render.src.fps));
+	if (accum < dbp_throttle.rate) return false;
+	//log_cb(RETRO_LOG_INFO, "%s AT %u\n", (in_emulation ? "[GFX_EndUpdate] EMULATING TWO FRAMES" : "[retro_run] SKIP EMULATING FRAME"), dbp_framecount);
+	accum -= dbp_throttle.rate;
+	return true;
 }
 
 static void DBP_AppendImage(const char* entry, bool sorted)
@@ -667,15 +704,6 @@ bool DBP_IsShuttingDown()
 	return (!first_shell || first_shell->exit);
 }
 
-Bit32s DBP_GetRealModeCycles()
-{
-	if (dbp_content_year <= 1970) return 3000; // Unknown year, dosbox default
-	if (dbp_content_year < 1981) return 500; // Very early 8086/8088 CPU
-	if (dbp_content_year > 1993) return 60000; // Pentium 90 MHz
-	static const Bit16u Cycles1981to1993[1+1993-1981] = { 900, 1400, 1800, 2300, 2800, 3800, 4800, 6300, 7800, 14000, 21000, 27000, 44000 };
-	return Cycles1981to1993[dbp_content_year - 1981];
-}
-
 bool DBP_GetRetroMidiInterface(retro_midi_interface* res)
 {
 	return (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_MIDI_INTERFACE, res));
@@ -761,19 +789,7 @@ void GFX_EndUpdate(const Bit16u *changedLines)
 	if (dbp_state == DBPSTATE_FIRST_FRAME && render.frameskip.max)
 		DBP_UnlockSpeed(false);
 
-	render.frameskip.max = 0;
-	if (dbp_throttle.rate < render.src.fps - 1 && dbp_throttle.rate > 10 && dbp_latency != DBP_LATENCY_VARIABLE &&
-		dbp_throttle.mode != RETRO_THROTTLE_FRAME_STEPPING && dbp_throttle.mode != RETRO_THROTTLE_FAST_FORWARD && dbp_throttle.mode != RETRO_THROTTLE_SLOW_MOTION && dbp_throttle.mode != RETRO_THROTTLE_REWINDING)
-	{
-		static float accum;
-		accum += (render.src.fps - dbp_throttle.rate);
-		if (accum >= dbp_throttle.rate)
-		{
-			//log_cb(RETRO_LOG_INFO, "[GFX_EndUpdate] SKIP 1 AT %u\n", dbp_framecount);
-			render.frameskip.max = 1;
-			accum -= dbp_throttle.rate;
-		}
-	}
+	render.frameskip.max = (DBP_NeedFrameSkip(true) ? 1 : 0);
 }
 
 static bool GFX_Events_AdvanceFrame()
@@ -1927,7 +1943,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.23";
+	info->library_version  = "0.24";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|m3u|m3u8";
@@ -2782,9 +2798,6 @@ static bool init_dosbox(const char* path, bool firsttime)
 		}
 	}
 
-	// Initialize cycles based on content year
-	CPU_CycleMax = DBP_GetRealModeCycles();
-
 	// Always launch puremenu, to tell us the shell was fully started
 	control->GetSection("autoexec")->ExecuteDestroy();
 	static_cast<Section_line*>(control->GetSection("autoexec"))->data += "@PUREMENU -BOOT\n";
@@ -3357,12 +3370,14 @@ void retro_run(void)
 		}
 	}
 
+	bool skip_emulate = DBP_NeedFrameSkip(false);
 	switch (dbp_latency)
 	{
 		case DBP_LATENCY_DEFAULT:
-			DBP_ThreadControl(TCM_FINISH_FRAME);
+			DBP_ThreadControl(skip_emulate ? TCM_PAUSE_FRAME : TCM_FINISH_FRAME);
 			break;
 		case DBP_LATENCY_LOW:
+			if (skip_emulate) break;
 			if (!dbp_frame_pending) DBP_ThreadControl(TCM_NEXT_FRAME);
 			DBP_ThreadControl(TCM_FINISH_FRAME);
 			break;
@@ -3395,9 +3410,11 @@ void retro_run(void)
 		numSamples = (av_info.timing.sample_rate / av_info.timing.fps) + dbp_audio_remain;
 	else
 		numSamples = (av_info.timing.sample_rate / dbp_throttle.rate) + dbp_audio_remain;
-	if (numSamples && haveSamples)
+	if (numSamples && haveSamples > numSamples * .99) // Allow 1 percent stretch on underrun
 	{
-		mixSamples = (numSamples > DBP_MAX_SAMPLES ? DBP_MAX_SAMPLES : (numSamples > haveSamples ? haveSamples : (Bit32u)numSamples));
+		mixSamples = (numSamples > haveSamples ? haveSamples : (Bit32u)numSamples);
+		dbp_audio_remain = ((numSamples <= mixSamples || numSamples > haveSamples) ? 0.0 : (numSamples - mixSamples));
+		if (mixSamples > DBP_MAX_SAMPLES) mixSamples = DBP_MAX_SAMPLES;
 		if (dbp_latency == DBP_LATENCY_VARIABLE)
 		{
 			if (dbp_pause_events) DBP_ThreadControl(TCM_RESUME_FRAME); // can be paused by serialize
@@ -3409,15 +3426,15 @@ void retro_run(void)
 		{
 			DBP_ThreadControl(TCM_RESUME_FRAME);
 		}
-		dbp_audio_remain = ((numSamples <= mixSamples || numSamples > haveSamples || numSamples > DBP_MAX_SAMPLES) ? 0.0 : (numSamples - mixSamples));
 	}
 
 	if (dbp_latency == DBP_LATENCY_DEFAULT)
 	{
-		DBP_ThreadControl(TCM_NEXT_FRAME);
+		DBP_ThreadControl(skip_emulate ? TCM_RESUME_FRAME : TCM_NEXT_FRAME);
 	}
 
 	// submit audio
+	//log_cb(RETRO_LOG_INFO, "[retro_run] Submit %d samples (remain %f) - Had: %d - Left: %d\n", mixSamples, dbp_audio_remain, haveSamples, DBP_MIXER_DoneSamplesCount());
 	if (mixSamples) audio_batch_cb(dbp_audio, mixSamples);
 
 	if (tpfActual)
@@ -3461,7 +3478,7 @@ void retro_run(void)
 static bool retro_serialize_all(DBPArchive& ar, bool unlock_thread)
 {
 	if (dbp_serializemode == DBPSERIALIZE_DISABLED) return false;
-	if (!dbp_pause_events) DBP_ThreadControl(TCM_PAUSE_FRAME);
+	DBP_ThreadControl(TCM_PAUSE_FRAME);
 	retro_time_t timeStart = time_cb();
 	DBPSerialize_All(ar, (dbp_state == DBPSTATE_RUNNING), dbp_game_running);
 	dbp_serialize_time += (Bit32u)(time_cb() - timeStart);
