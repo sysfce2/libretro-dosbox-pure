@@ -1943,7 +1943,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.24";
+	info->library_version  = "0.25";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|m3u|m3u8";
@@ -2426,9 +2426,10 @@ static bool check_variables()
 			Section* section = control->GetSection(section_name);
 			DBP_ASSERT(section);
 			std::string str = var_name;
-			std::string old_val = section->GetPropValue(str);
-			DBP_ASSERT(old_val != "PROP_NOT_EXIST");
-			if (!section || old_val == new_value) return false;
+			Property* prop = section->GetProp(str);
+			DBP_ASSERT(prop);
+			std::string old_val = prop->GetValue().ToString();
+			if (!section || old_val == new_value || prop->getChange() == Property::Changeable::OnlyByConfigProgram) return false;
 
 			bool reInitSection = (dbp_state != DBPSTATE_BOOT);
 			if (disallow_in_game && dbp_game_running)
@@ -2562,7 +2563,6 @@ static bool check_variables()
 	}
 	if (toggled_variable) DBP_ThreadControl(dbp_pause_events ? TCM_RESUME_FRAME : TCM_NEXT_FRAME);
 	Variables::RetroVisibility("dosbox_pure_auto_target", (dbp_latency == DBP_LATENCY_LOW));
-	dbp_auto_target = (dbp_latency == DBP_LATENCY_LOW ? (float)atof(Variables::RetroGet("dosbox_pure_auto_target", "0.8")) : 1.0f);
 
 	switch (Variables::RetroGet("dosbox_pure_perfstats", "none")[0])
 	{
@@ -2582,6 +2582,7 @@ static bool check_variables()
 	const char* cycles = Variables::RetroGet("dosbox_pure_cycles", "auto");
 	bool cycles_numeric = (cycles[0] >= '0' && cycles[0] <= '9');
 	Variables::RetroVisibility("dosbox_pure_cycles_scale", cycles_numeric);
+	Variables::RetroVisibility("dosbox_pure_cycle_limit", !cycles_numeric);
 	if (cycles_numeric)
 	{
 		snprintf(buf, sizeof(buf), "%d", (int)(atoi(cycles) * (float)atof(Variables::RetroGet("dosbox_pure_cycles_scale", "1.0")) + .499));
@@ -2589,8 +2590,12 @@ static bool check_variables()
 	}
 	visibility_changed |= Variables::DosBoxSet("cpu", "cycles", cycles);
 
-	Variables::DosBoxSet("cpu", "core",    Variables::RetroGet("dosbox_pure_cpu_core", "auto"), false, true);
-	Variables::DosBoxSet("cpu", "cputype", Variables::RetroGet("dosbox_pure_cpu_type", "auto"), false, true);
+	dbp_auto_target =
+		(dbp_latency == DBP_LATENCY_LOW ? (float)atof(Variables::RetroGet("dosbox_pure_auto_target", "0.8")) : 1.0f)
+		* (cycles_numeric ? 1.0f : (float)atof(Variables::RetroGet("dosbox_pure_cycle_limit", "1.0")));
+
+	Variables::DosBoxSet("cpu", "core",    Variables::RetroGet("dosbox_pure_cpu_core", "auto"), true);
+	Variables::DosBoxSet("cpu", "cputype", Variables::RetroGet("dosbox_pure_cpu_type", "auto"), true);
 
 	if (dbp_last_machine != machine[0])
 	{
@@ -2786,7 +2791,7 @@ static bool init_dosbox(const char* path, bool firsttime)
 				DriveFileIterator(Drives[i], Local::FileIter);
 	}
 
-	if (!dbp_content_year)
+	if (!dbp_content_year && path)
 	{
 		// Try to find a year somewhere in the content path, i.e. "Game (1993).zip" or "/DOS/1993/Game.zip"
 		for (const char *p = path + strlen(path), *pMin = path + 5; p >= pMin; p--)
