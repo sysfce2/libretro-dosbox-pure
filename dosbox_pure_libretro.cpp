@@ -143,9 +143,9 @@ static const char* DBP_KBDNAMES[] =
 {
 	"None","1","2","3","4","5","6","7","8","9","0","Q","W","E","R","T","Y","U","I","O","P","A","S","D","F","G","H","J","K","L","Z","X","C","V","B","N","M",
 	"F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12","Esc","Tab","Backspace","Enter","Space","Left-Alt","Right-Alt","Left-Ctrl","Right-Ctrl","Left-Shift","Right-Shift",
-	"Caps-Lock","Scroll-Lock","Num-Lock","Grave","Minus","Equals","Backslash","Left-Bracket","Right-Bracket","Semicolon","Quote","Period","Comma","Slash","Extra-Lt-Gt",
+	"Caps-Lock","Scroll-Lock","Num-Lock","Grave `","Minus -","Equals =","Backslash","Left-Bracket [","Right-Bracket ]","Semicolon ;","Quote '","Period .","Comma ,","Slash /","Backslash \\",
 	"Print-Screen","Pause","Insert","Home","Page-Up","Delete","End","Page-Down","Left","Up","Down","Right","NP-1","NP-2","NP-3","NP-4","NP-5","NP-6","NP-7","NP-8","NP-9","NP-0",
-	"NP-Divide","NP-Multiply","NP-Minus","NP-Plus","NP-Enter","NP-Period",""
+	"NP-Divide /","NP-Multiply *","NP-Minus -","NP-Plus +","NP-Enter","NP-Period .",""
 };
 static std::vector<DBP_InputBind> dbp_input_binds;
 static std::vector<Bit8u> dbp_custom_mapping;
@@ -159,6 +159,7 @@ static bool dbp_last_hideadvanced;
 static char dbp_last_machine;
 static char dbp_reboot_machine;
 static char dbp_auto_mapping_mode;
+static Bit8u dbp_alphablend_base;
 static Bit16s dbp_bind_mousewheel;
 static Bit16s dbp_content_year;
 static int dbp_joy_analog_deadzone = (int)(0.15f * (float)DBP_JOY_ANALOG_RANGE);
@@ -171,7 +172,7 @@ static const char* dbp_auto_mapping_title;
 	((float)((V > dbp_joy_analog_deadzone) ? (V - dbp_joy_analog_deadzone) : (V + dbp_joy_analog_deadzone)) / (float)(DBP_JOY_ANALOG_RANGE - dbp_joy_analog_deadzone)))
 
 // DOSBOX EVENTS
-enum DBP_Event_Type
+enum DBP_Event_Type : Bit8u
 {
 	DBPET_JOY1X, DBPET_JOY1Y, DBPET_JOY2X, DBPET_JOY2Y, DBPET_JOYMX, DBPET_JOYMY,
 	_DBPET_JOY_AXIS_MAX,
@@ -239,8 +240,24 @@ static unsigned char dbp_keys_down[KBD_LAST+1];
 static unsigned short dbp_keymap_dos2retro[KBD_LAST];
 static unsigned char dbp_keymap_retro2dos[RETROK_LAST];
 static void(*dbp_input_intercept)(DBP_Event_Type, int, int);
-static void DBP_QueueEvent(DBP_Event& evt)
+static void DBP_QueueEvent(DBP_Event_Type type, int val = 0, int val2 = 0)
 {
+	switch (type)
+	{
+		case DBPET_KEYDOWN:
+			if (!val || ((++dbp_keys_down[val]) & 127) > 1) return;
+			dbp_keys_down_count++;
+			break;
+		case DBPET_KEYUP:
+			if (((dbp_keys_down[val]) & 127) == 0 || ((--dbp_keys_down[val]) & 127) > 0) return;
+			dbp_keys_down[val] = 0;
+			dbp_keys_down_count--;
+			break;
+		case DBPET_MOUSEDOWN: case DBPET_JOY1DOWN: case DBPET_JOY2DOWN: dbp_keys_down[KBD_LAST] = 1; break;
+		case DBPET_MOUSEUP:   case DBPET_JOY1UP:   case DBPET_JOY2UP:   dbp_keys_down[KBD_LAST] = 0; break;
+		default:;
+	}
+	DBP_Event evt = { type, val, val2 };
 	DBP_ASSERT(evt.type != DBPET_AXISMAPPAIR);
 	int cur = dbp_event_queue_write_cursor, next = ((cur + 1) % DBP_EVENT_QUEUE_SIZE);
 	if (next == dbp_event_queue_read_cursor)
@@ -278,26 +295,6 @@ static void DBP_QueueEvent(DBP_Event& evt)
 	}
 	dbp_event_queue[cur] = evt;
 	dbp_event_queue_write_cursor = next;
-}
-static void DBP_QueueEvent(DBP_Event_Type type, int val = 0, int val2 = 0)
-{
-	switch (type)
-	{
-		case DBPET_KEYDOWN:
-			if (!val || ((++dbp_keys_down[val]) & 127) > 1) return;
-			dbp_keys_down_count++;
-			break;
-		case DBPET_KEYUP:
-			if (((dbp_keys_down[val]) & 127) == 0 || ((--dbp_keys_down[val]) & 127) > 0) return;
-			dbp_keys_down[val] = 0;
-			dbp_keys_down_count--;
-			break;
-		case DBPET_MOUSEDOWN: case DBPET_JOY1DOWN: case DBPET_JOY2DOWN: dbp_keys_down[KBD_LAST] = 1; break;
-		case DBPET_MOUSEUP:   case DBPET_JOY1UP:   case DBPET_JOY2UP:   dbp_keys_down[KBD_LAST] = 0; break;
-		default:;
-	}
-	DBP_Event evt = { type, val, val2 };
-	DBP_QueueEvent(evt);
 }
 
 // LIBRETRO CALLBACKS
@@ -544,11 +541,12 @@ static bool DBP_ExtractPathInfo(const char* path, const char ** out_path_file = 
 	// A drive letter can be specified either by naming the mount file '.<letter>.<extension>' or by loading a path with an added '#<letter>' suffix.
 	char letter = 0;
 	const char *p_fra_drive = (fragment && fragment[1] && !fragment[2] ? fragment + 1 : NULL);
-	const char *p_dot_drive = (ext - path > 3 && ext[-3] == '.' ? ext - 2 : NULL);
+	const char *p_dot_drive = (ext - path > 3 && ext[-3] == '.' && !p_fra_drive ? ext - 2 : NULL);
 	if      (p_fra_drive && (*p_fra_drive >= 'A' && *p_fra_drive <= 'Z')) letter = *p_fra_drive;
 	else if (p_fra_drive && (*p_fra_drive >= 'a' && *p_fra_drive <= 'z')) letter = *p_fra_drive - 0x20;
 	else if (p_dot_drive && (*p_dot_drive >= 'A' && *p_dot_drive <= 'Z')) letter = *p_dot_drive;
 	else if (p_dot_drive && (*p_dot_drive >= 'a' && *p_dot_drive <= 'z')) letter = *p_dot_drive - 0x20;
+	else p_dot_drive = NULL;
 
 	if (out_path_file) *out_path_file = path_file;
 	if (out_namelen) *out_namelen = (p_dot_drive ? p_dot_drive : ext) - 1 - path_file;
@@ -558,13 +556,18 @@ static bool DBP_ExtractPathInfo(const char* path, const char ** out_path_file = 
 	return true;
 }
 
+static bool DBP_IsMounted(char drive)
+{
+	return Drives[drive-'A'] || (drive < 'A'+MAX_DISK_IMAGES && imageDiskList[drive-'A']);
+}
+
 static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, const char* boot = NULL)
 {
 	const char *path = (boot ? boot : dbp_images[disk_image_index].c_str()), *path_file, *ext, *fragment; char letter;
 	DBP_ExtractPathInfo(path, &path_file, NULL, &ext, &fragment, &letter);
 
 	if (!boot && dbp_disk_mount_letter) letter = dbp_disk_mount_letter;
-	if (letter && Drives[letter-'A']) { DBP_ASSERT(0); return NULL; }
+	if (letter && DBP_IsMounted(letter)) { DBP_ASSERT(0); return NULL; }
 
 	std::string path_no_fragment;
 	if (fragment)
@@ -575,8 +578,10 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, const char* boot = NU
 		path      = path_no_fragment.c_str();
 	}
 
-	DOS_Drive* res = NULL;
-	Bit8u res_media_byte = 0;
+	DOS_Drive* drive = NULL;
+	imageDisk* disk = NULL;
+	Bit8u media_byte = 0;
+
 	if (!strcasecmp(ext, "ZIP") || !strcasecmp(ext, "DOSZ"))
 	{
 		FILE* zip_file_h = fopen_wrap(path, "rb");
@@ -586,36 +591,29 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, const char* boot = NU
 			retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s", "ZIP", path);
 			return NULL;
 		}
-		res = new zipDrive(new rawFile(zip_file_h, false), dbp_legacy_save);
+		drive = new zipDrive(new rawFile(zip_file_h, false), dbp_legacy_save);
 
 		// Use zip filename as drive label, cut off at file extension, the first occurence of a ( or [ character or right white space.
 		char lbl[11+1], *lblend = lbl + (ext - path_file > 11 ? 11 : ext - 1 - path_file);
 		memcpy(lbl, path_file, lblend - lbl);
 		for (char* c = lblend; c > lbl; c--) { if (c == lblend || *c == '(' || *c == '[' || (*c <= ' ' && !c[1])) *c = '\0'; }
-		res->label.SetLabel(lbl, !(boot && (!letter || letter == 'C')), true);
+		drive->label.SetLabel(lbl, !(boot && (!letter || letter == 'C')), true);
 
-		if (boot && (!letter || letter == 'C')) return res;
+		if (boot && (!letter || letter == 'C')) return drive;
 		if (!letter) letter = 'D';
-		if (letter > 'C')
-		{
-			Bit8u subUnit;
-			MSCDEX_AddDrive(letter, "", subUnit);
-		}
-		else if (letter < 'C')
-		{
-			res_media_byte = 0xF0; //floppy
-		}
+		if (letter > 'C') { Bit8u subUnit; MSCDEX_AddDrive(letter, "", subUnit); }
+		if (letter < 'C') media_byte = 0xF0; //floppy
 	}
 	else if (!strcasecmp(ext, "IMG") || !strcasecmp(ext, "IMA") || !strcasecmp(ext, "VHD") || !strcasecmp(ext, "JRC") || !strcasecmp(ext, "TC"))
 	{
-		fatDrive* fat = new fatDrive(path, 512, 63, 16, 0, 0);
-		if (!fat->loadedDisk || letter >= 'A'+MAX_DISK_IMAGES)
+		fatDrive* fat = new fatDrive(path, 512, 0, 0, 0, 0);
+		if (!fat->loadedDisk || (!fat->created_successfully && letter >= 'A'+MAX_DISK_IMAGES))
 		{
 			FAT_TRY_ISO:
 			delete fat;
 			goto MOUNT_ISO;
 		}
-		if (!fat->created_successfully)
+		else if (!fat->created_successfully)
 		{
 			// Check if ISO (based on CDROM_Interface_Image::LoadIsoFile/CDROM_Interface_Image::CanReadPVD)
 			static const Bit32u pvdoffsets[] = { 32768, 32768+8, 37400, 37400+8, 37648, 37656, 37656+8 };
@@ -625,19 +623,13 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, const char* boot = NU
 				if (fat->loadedDisk->Read_Raw(pvd, pvdoffset, 8) == 8 && (!memcmp(pvd, "\1CD001\1", 7) || !memcmp(pvd, "\1CDROM\1", 7)))
 					goto FAT_TRY_ISO;
 			}
-			// Neither FAT nor ISO, just register with BIOS/CMOS for raw sector access
-			if (!letter) letter = 'A';
-			if (imageDiskList[letter-'A']) delete imageDiskList[letter-'A'];
-			imageDiskList[letter-'A'] = fat->loadedDisk;
+			// Neither FAT nor ISO, just register with BIOS/CMOS for raw sector access and set media table byte
+			disk = fat->loadedDisk;
 			fat->loadedDisk = NULL; // don't want it deleted by ~fatDrive
 			delete fat;
 		}
 		else
 		{
-			bool is_hdd = fat->loadedDisk->hardDrive;
-			if (boot && is_hdd && (!letter || letter == 'C')) return fat;
-			if (!letter) letter = (is_hdd ? 'D' : 'A');
-
 			// Copied behavior from IMGMOUNT::Run, force obtaining the label and saving it in label
 			RealPt save_dta = dos.dta();
 			dos.dta(dos.tables.tempdta);
@@ -646,27 +638,31 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, const char* boot = NU
 			fat->FindFirst((char*)"", dta);
 			dos.dta(save_dta);
 
-			// Register with BIOS/CMOS
-			if (letter-'A' < MAX_DISK_IMAGES)
-			{
-				if (imageDiskList[letter-'A']) delete imageDiskList[letter-'A'];
-				imageDiskList[letter-'A'] = fat->loadedDisk;
-			}
+			drive = fat;
+			disk = fat->loadedDisk;
 
-			// Because fatDrive::GetMediaByte is different than all others...
-			res_media_byte = (is_hdd ? 0xF8 : 0xF0);
-			res = fat;
+			if (boot && disk->hardDrive && (!letter || letter == 'C'))
+			{
+				// also register with BIOS/CMOS to make this image bootable (make sure it's its own instance as we pass this one to be owned by unionDrive)
+				fatDrive* fat2 = new fatDrive(path, 512, 63, 0, 0, 0);
+				imageDiskList['C'-'A'] = fat2->loadedDisk;
+				fat2->loadedDisk = NULL; // don't want it deleted by ~fatDrive
+				delete fat2;
+				return fat;
+			}
 		}
+		if (!letter) letter = (disk->hardDrive ? 'D' : 'A');
+		media_byte = (disk->hardDrive ? 0xF8 : (disk->active ? disk->GetBiosType() : 0));
 	}
 	else if (!strcasecmp(ext, "ISO") || !strcasecmp(ext, "CUE") || !strcasecmp(ext, "INS"))
 	{
 		MOUNT_ISO:
 		int error = -1;
 		if (letter < 'D') letter = 'D';
-		res = new isoDrive(letter, path, 0xF8, error);
+		drive = new isoDrive(letter, path, 0xF8, error);
 		if (error)
 		{
-			delete res;
+			delete drive;
 			if (!boot) dbp_disk_eject_state = true;
 			retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s", "image", path);
 			return NULL;
@@ -675,8 +671,8 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, const char* boot = NU
 	else if (!strcasecmp(ext, "EXE") || !strcasecmp(ext, "COM") || !strcasecmp(ext, "BAT") || !strcasecmp(ext, "CONF"))
 	{
 		if (!letter) letter = (boot ? 'C' : 'D');
-		res = new localDrive(std::string(path, path_file - path).c_str(), 512, 32, 32765, 16000, 0xF8);
-		res->label.SetLabel("PURE", false, true);
+		drive = new localDrive(std::string(path, path_file - path).c_str(), 512, 32, 32765, 16000, 0xF8);
+		drive->label.SetLabel("PURE", false, true);
 		path = NULL; // don't treat as disk image, but always register with Drives even if is_boot
 	}
 	else if (!strcasecmp(ext, "M3U") || !strcasecmp(ext, "M3U8"))
@@ -714,14 +710,24 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, const char* boot = NU
 		return NULL;
 	}
 
-	DBP_ASSERT(!Drives[letter-'A']);
-	if (res)
+	DBP_ASSERT(!DBP_IsMounted(letter));
+	if (drive)
 	{
-		Drives[letter-'A'] = res;
-		mem_writeb(Real2Phys(dos.tables.mediaid) + (letter-'A') * 9, (res_media_byte ? res_media_byte : res->GetMediaByte()));
+		// Register emulated drive
+		Drives[letter-'A'] = drive;
+		if (!media_byte) media_byte = drive->GetMediaByte();
 	}
+	if (disk && letter < 'A'+MAX_DISK_IMAGES)
+	{
+		// Register with BIOS/CMOS
+		if (imageDiskList[letter-'A']) { DBP_ASSERT(false); delete imageDiskList[letter-'A']; }
+		imageDiskList[letter-'A'] = disk;
+	}
+	// Write media bytes to dos table
+	mem_writeb(Real2Phys(dos.tables.mediaid) + (letter-'A') * 9, media_byte);
 	if (path)
 	{
+		// Set mounted disk image
 		if (boot) DBP_AppendImage(path, false);
 		else dbp_disk_image_index = disk_image_index;
 		dbp_disk_mount_letter = letter;
@@ -732,29 +738,40 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, const char* boot = NU
 
 static void DBP_Unmount(char drive)
 {
-	if (!Drives[drive-'A'] || Drives[drive-'A']->UnMount() != 0) return;
+	if (Drives[drive-'A'] && Drives[drive-'A']->UnMount() != 0) { DBP_ASSERT(false); return; }
+	MSCDEX_RemoveDrive(drive);
 	Drives[drive-'A'] = NULL;
+	if (drive < 'A'+MAX_DISK_IMAGES)
+		if (imageDisk*& dsk = imageDiskList[drive-'A'])
+			{ delete dsk; dsk = NULL; }
 	mem_writeb(Real2Phys(dos.tables.mediaid)+(drive-'A')*9,0);
 }
 
 static void DBP_Remount(char drive1, char drive2)
 {
-	if (!Drives[drive1-'A'] || Drives[drive2-'A']) { return; }
+	if (!DBP_IsMounted(drive1) || DBP_IsMounted(drive2)) return;
 	if (drive1 != dbp_disk_mount_letter)
 	{
-		if (MSCDEX_HasDrive(drive1)) MSCDEX_RemoveDrive(drive1);
-		if (imageDisk*& dsk = imageDiskList[drive1-'A']) { delete dsk; dsk = NULL; }
-
-		DOS_Drive* drive = Drives[drive1-'A'];
-		Drives[drive1-'A'] = NULL;
-		Drives[drive2-'A'] = drive;
-		mem_writeb(Real2Phys(dos.tables.mediaid) + (drive2-'A') * 9, (drive2 > 'B' ? 0xF8 : 0xF0));
-
-		if (drive2 > 'C')
+		// Swap registration with BIOS/CMOS
+		if (imageDisk*& dsk = imageDiskList[drive1-'A'])
 		{
-			Bit8u subUnit;
-			MSCDEX_AddDrive(drive2, "", subUnit);
+			if (drive2 >= 'A'+MAX_DISK_IMAGES) delete dsk;
+			else imageDiskList[drive2-'A'] = dsk;
+			dsk = NULL;
 		}
+
+		// Swap media bytes in dos table
+		mem_writeb(Real2Phys(dos.tables.mediaid) + (drive2-'A') * 9, mem_readb(Real2Phys(dos.tables.mediaid) + (drive1-'A') * 9));
+		mem_writeb(Real2Phys(dos.tables.mediaid) + (drive1-'A') * 9, 0);
+
+		// Swap emulated drives
+		DOS_Drive* drive = Drives[drive1-'A'];
+		Drives[drive2-'A'] = drive;
+		Drives[drive1-'A'] = NULL;
+
+		// Handle MSCDEX
+		MSCDEX_RemoveDrive(drive1);
+		if (drive2 > 'C') { Bit8u subUnit; MSCDEX_AddDrive(drive2, "", subUnit); }
 
 		// If the currently running batch file is placed on the remounted drive, make sure it now points to the new drive
 		if (BatchFile* bf = first_shell->bf)
@@ -767,7 +784,7 @@ static void DBP_Remount(char drive1, char drive2)
 		dbp_disk_mount_letter = drive2;
 		DBP_Mount(dbp_disk_image_index);
 	}
-	if (drive1 == DOS_GetDefaultDrive()) DOS_SetDrive(drive2-'A');
+	if (DOS_GetDefaultDrive() == drive1-'A') DOS_SetDrive(drive2-'A');
 	for (std::string& img : dbp_images) if (img[0] == '$' && img[1] == drive1) img[1] = drive2;
 }
 
@@ -1391,10 +1408,11 @@ struct DBP_MenuState
 	enum ItemType : Bit8u { IT_NONE, IT_EXEC, IT_EXIT, IT_MOUNT, IT_BOOTSELECTMACHINE, IT_BOOT, IT_COMMANDLINE, IT_EDIT, IT_ADD, IT_DEL, IT_DEVICE } result;
 	int sel, scroll, mousex, mousey, joyx, joyy;
 	Bit32u open_ticks;
+	DBP_Event_Type held_event; KBD_KEYS held_key; Bit32u held_ticks;
 	struct Item { ItemType type; Bit16s info; std::string str; };
 	std::vector<Item> list;
 
-	DBP_MenuState() : result(IT_NONE), sel(0), scroll(0), mousex(0), mousey(0), joyx(0), joyy(0), open_ticks(DBP_GetTicks()) { }
+	DBP_MenuState() : result(IT_NONE), sel(0), scroll(0), mousex(0), mousey(0), joyx(0), joyy(0), open_ticks(DBP_GetTicks()), held_event(_DBPET_MAX) { }
 
 	bool ProcessInput(DBP_Event_Type type, int val, int val2, int* p_x_change = NULL)
 	{
@@ -1420,6 +1438,7 @@ struct DBP_MenuState
 					case KBD_enter: case KBD_kpenter: result = IT_EXEC; break;
 					case KBD_esc:                     result = IT_EXIT; break;
 				}
+				if (held_event == DBPET_KEYDOWN) held_event = _DBPET_MAX;
 				break;
 			case DBPET_MOUSEXY:
 				mousex += val;
@@ -1433,11 +1452,13 @@ struct DBP_MenuState
 			case DBPET_JOY1X: case DBPET_JOY2X:
 				if (joyy <  16000 && val >=  16000) x_change++;
 				if (joyy > -16000 && val <= -16000) x_change--;
+				if (held_event == type && val > -16000 && val < 16000) held_event = _DBPET_MAX;
 				joyx = val;
 				break;
 			case DBPET_JOY1Y: case DBPET_JOY2Y:
 				if (joyy <  16000 && val >=  16000) sel_change++;
 				if (joyy > -16000 && val <= -16000) sel_change--;
+				if (held_event == type && val > -16000 && val < 16000) held_event = _DBPET_MAX;
 				joyy = val;
 				break;
 			case DBPET_JOY1DOWN: case DBPET_JOY2DOWN: if (val == 0) result = IT_EXEC; break; // B/Y button
@@ -1448,6 +1469,19 @@ struct DBP_MenuState
 			result = IT_NONE; // ignore already pressed buttons when opening
 
 		if (x_change && !p_x_change) sel_change = x_change * 12;
+
+		if ((sel_change || x_change) && !val2)
+		{
+			held_event = type;
+			held_ticks = DBP_GetTicks() + 300;
+			if      (sel_change ==  -1) held_key = KBD_up;
+			else if (sel_change ==   1) held_key = KBD_down;
+			else if (sel_change == -12) held_key = KBD_pageup;
+			else if (sel_change ==  12) held_key = KBD_pagedown;
+			else if (x_change   ==  -1) held_key = KBD_left;
+			else if (x_change   ==   1) held_key = KBD_right;
+			else held_event = _DBPET_MAX;
+		}
 
 		DBP_ASSERT(list.size());
 		for (int count = (int)list.size(); !result && sel_change;)
@@ -1473,6 +1507,15 @@ struct DBP_MenuState
 		if (sel < scroll+     4) scroll = (sel <         4 ?            0 : sel -        4);
 		if (sel > scroll+rows-5) scroll = (sel > count - 5 ? count - rows : sel - rows + 5);
 	}
+
+	void UpdateHeld(void(*input)(DBP_Event_Type, int, int))
+	{
+		if (held_event == _DBPET_MAX) return;
+		Bit32u t = DBP_GetTicks();
+		if ((Bit32s)(t - held_ticks) < 60) return;
+		held_ticks = (t - held_ticks > 120 ? t : held_ticks + 60);
+		input(DBPET_KEYDOWN, (int)held_key, 1);
+	}
 };
 
 static void DBP_PureMenuProgram(Program** make)
@@ -1488,15 +1531,12 @@ static void DBP_PureMenuProgram(Program** make)
 			switch (location++)
 			{
 				case 0:
-					memcpy(line + 0, "@ :\n", 5);
-					line[1] = p[0];
-					break;
-				case 1:
+					DOS_SetDrive(p[0]-'A');
 					memcpy(line + 0, "@cd ", 4);
 					memcpy(line + 4, p + 2, (f - (f == p + 3 ? 0 : 1) - p - 2));
 					memcpy(line + 4 + (f - (f == p + 3 ? 0 : 1) - p - 2), "\n", 2);
 					break;
-				case 2:
+				case 1:
 				{
 					bool isbat = ((fext = strrchr(f, '.')) && !strcasecmp(fext, ".bat"));
 					int call_cmd_len = (isbat ? 5 : 0), flen = (int)strlen(f);
@@ -1506,8 +1546,8 @@ static void DBP_PureMenuProgram(Program** make)
 					memcpy(line+call_cmd_len+1+flen, "\n", 2);
 					break;
 				}
-				case 3:
-					memcpy(line, "@Z:PUREMENU -FINISH\n", 21);
+				case 2:
+					memcpy(line, "@Z:PUREMENU", 11); memcpy(line+11, " -FINISH\n", 10);
 					delete this;
 					break;
 			}
@@ -1522,37 +1562,38 @@ static void DBP_PureMenuProgram(Program** make)
 		{
 			if (location++)
 			{
-				if (Drives['C'-'A'] && Drives['E'-'A']) { DBP_Remount('C', 'D'); DBP_Remount('E', 'C'); }
-				memcpy(line, "@Z:PUREMENU -FINISH\n", 21);
+				if (DBP_IsMounted('C') && DBP_IsMounted('E')) { DBP_Remount('C', 'D'); DBP_Remount('E', 'C'); }
+				memcpy(line, "@Z:PUREMENU", 11); memcpy(line+11, " -FINISH\n", 10);
 				delete this;
 				return true;
 			}
-			if (dbp_disk_mount_letter && !Drives[dbp_disk_mount_letter-'A'] && (dbp_disk_mount_letter >= 'A'+MAX_DISK_IMAGES || !imageDiskList[dbp_disk_mount_letter-'A']))
+			size_t imglen = (!dbp_images.empty() ? dbp_images[dbp_disk_image_index].size() : 0);
+			if (imglen && (!dbp_disk_mount_letter || !DBP_IsMounted(dbp_disk_mount_letter)))
 			{
 				DBP_Mount();
 			}
-			if (dbp_disk_mount_letter == 'D' && imageDiskList[dbp_disk_mount_letter-'A'])
+			if (dbp_disk_mount_letter == 'D' && imageDiskList['D'-'A'])
 			{
 				// Swap mounted hard disks
 				DBP_Remount('C', 'E');
 				DBP_Remount('D', 'C');
 			}
 			memcpy(line, "@boot -l   ", 11); 
-			line[9] = (dbp_disk_mount_letter ? dbp_disk_mount_letter : 'A');
+			line[9] = (dbp_disk_mount_letter ? dbp_disk_mount_letter : (imageDiskList['A'-'A'] ? 'A' : 'C'));
 			// The path to the image needs to be passed to boot for pcjr carts
-			strcpy(line+11, dbp_images[dbp_disk_image_index].c_str());
-			memcpy(line+11+dbp_images[dbp_disk_image_index].size(), "\n", 2);
+			if (imglen) memcpy(line+11, dbp_images[dbp_disk_image_index].c_str(), imglen);
+			memcpy(line+11+imglen, "\n", 2);
 			return true;
 		}
 	};
 
 	struct Menu : Program, DBP_MenuState
 	{
-		Menu() : exe_count(0), fs_count(0), init_autosel(0), init_autoskip(0), autoskip(0), have_autoboot(false), have_dosboxbat(false), use_autoboot(false), multidrive(false), bootimg(false) { }
+		Menu() : exe_count(0), fs_count(0), init_autosel(0), init_autoskip(0), autoskip(0), have_autoboot(false), use_autoboot(false), multidrive(false), bootimg(false) { }
 		~Menu() {}
 
 		int exe_count, fs_count, init_autosel, init_autoskip, autoskip;
-		bool have_autoboot, have_dosboxbat, use_autoboot, multidrive, bootimg;
+		bool have_autoboot, use_autoboot, multidrive, bootimg;
 
 		enum
 		{
@@ -1574,6 +1615,14 @@ static void DBP_PureMenuProgram(Program** make)
 				list.back().str = im;
 				fs_count++;
 			}
+			if (!bootimg) for (imageDisk* dsk : imageDiskList) bootimg |= !!dsk;
+			if (bootimg)
+			{
+				list.push_back({ IT_BOOTSELECTMACHINE });
+				list.back().str = "[BOOT IMAGE FILE]";
+				fs_count++;
+			}
+			if (fs_count) list.push_back({ IT_NONE });
 
 			// Scan drive C first, any others after
 			int old_sel = sel;
@@ -1585,26 +1634,11 @@ static void DBP_PureMenuProgram(Program** make)
 				DriveFileIterator(Drives[sel], FileIter, (Bitu)this);
 				multidrive = true;
 			}
+			if (exe_count) list.push_back({ IT_NONE });
 
-			sel = 0;
-			if (fs_count && exe_count)
-			{
-				Item emptyitem = { IT_NONE };
-				list.insert(list.begin() + fs_count, emptyitem);
-				sel = fs_count + 1;
-			}
+			sel = (fs_count && exe_count ? fs_count + 1 : 0);
 
-			if (!bootimg) for (imageDisk* dsk : imageDiskList) bootimg |= !!dsk;
-			if (bootimg && dbp_images.size())
-			{
-				Item bootitem = { IT_BOOTSELECTMACHINE };
-				list.insert(list.begin() + fs_count, bootitem);
-				list[fs_count].str = "[BOOT IMAGE FILE]";
-				sel = fs_count + (exe_count ? 2 : 0);
-			}
-
-			if (list.empty()) { list.push_back({ IT_NONE, 0, "No executable file found" }); sel = 2; }
-			list.push_back({ IT_NONE });
+			if (list.empty()) { list.push_back({ IT_NONE }); list.back().str = "No executable file found"; list.push_back({ IT_NONE }); sel = 2; }
 			list.push_back({ IT_COMMANDLINE, 0, "Go to command line" });
 			list.push_back({ IT_EXIT, 0, "Exit" });
 			if (!initial_scan) { if (old_sel < (int)list.size()) sel = old_sel; return; }
@@ -1624,10 +1658,6 @@ static void DBP_PureMenuProgram(Program** make)
 			{
 				memcpy(autostr, "C:\\", 3);
 				safe_strncpy(autostr + 3, strrchr(dbp_content_path.c_str(), '#') + 1, DOS_PATHLENGTH + 16);
-			}
-			else if (have_dosboxbat)
-			{
-				memcpy(autostr, "C:\\DOSBOX.BAT", sizeof("C:\\DOSBOX.BAT"));
 			}
 			if (autostr[0])
 			{
@@ -1653,17 +1683,16 @@ static void DBP_PureMenuProgram(Program** make)
 			}
 			const char* fext = strrchr(path, '.');
 			if (!fext++ || (strcmp(fext, "EXE") && strcmp(fext, "COM") && strcmp(fext, "BAT"))) return;
-			if (m->sel == ('C'-'A') && !memcmp(path, "DOSBOX.BAT", sizeof("DOSBOX.BAT"))) m->have_dosboxbat = true;
 			m->exe_count++;
 
-			int insert_index;
 			std::string entry;
 			entry.reserve(3 + (fext - path) + 3 + 1);
 			(((entry += ('A' + m->sel)) += ':') += '\\') += path;
 
 			// insert into menu list ordered alphabetically
 			Item item = { IT_EXEC };
-			for (insert_index = 0; insert_index != (int)m->list.size(); insert_index++)
+			int insert_index = (m->fs_count ? m->fs_count + 1 : 0);
+			for (; insert_index != (int)m->list.size(); insert_index++)
 				if (m->list[insert_index].str > entry) break;
 			m->list.insert(m->list.begin() + insert_index, item);
 			std::swap(m->list[insert_index].str, entry);
@@ -1812,8 +1841,8 @@ static void DBP_PureMenuProgram(Program** make)
 					menu->list.push_back({ IT_BOOT, 't', "Tandy (Tandy Graphics Adapter" });
 					menu->list.push_back({ IT_BOOT, 'h', "Hercules (Hercules Graphics Card)" });
 					menu->list.push_back({ IT_BOOT, 'p', "PCjr" });
-					const std::string& img = dbp_images[dbp_disk_image_index];
-					bool isPCjrCart = (img[img.size()-3] == 'J' || img[img.size()-2] == 'T');
+					const std::string& img = (!dbp_images.empty() ? dbp_images[dbp_disk_image_index] : menu->list[1].str);
+					bool isPCjrCart = (img.size() > 3 && (img[img.size()-3] == 'J' || img[img.size()-2] == 'T'));
 					for (const Item& it : menu->list)
 						if (it.info == (isPCjrCart ? 'p' : dbp_last_machine))
 							menu->sel = (int)(&it - &menu->list[0]);
@@ -1865,6 +1894,7 @@ static void DBP_PureMenuProgram(Program** make)
 			while (!result && !first_shell->exit)
 			{
 				CALLBACK_Idle();
+				if (input_intercept == HandleInput) UpdateHeld(HandleInput);
 				if (tick_limit && DBP_GetTicks() >= tick_limit) first_shell->exit = true;
 			}
 			dbp_input_intercept = NULL;
@@ -1977,10 +2007,7 @@ static void DBP_PureMenuProgram(Program** make)
 			else if (result == IT_EXIT)
 				first_shell->exit = true;
 			else if (result == IT_COMMANDLINE)
-			{
-				DOS_SetDrive('C'-'A');
 				WriteOut("Type 'PUREMENU' to return to the start menu\n");
-			}
 			dbp_lastmenuticks = DBP_GetTicks();
 		}
 	};
@@ -2031,12 +2058,12 @@ static void DBP_PureRemountProgram(Program** make)
 		{
 			cmd->GetStringRemain(temp_line);
 			const char* p1 = temp_line.c_str(), *p2 = (p1 ? strchr(p1, ' ') : NULL);
-			char drive1 = (      p1[0] && p1[1] == ':' ? (p1[0] >= 'A' && p1[0] <= 'Z' ? p1[0] : (p1[0] >= 'a' && p1[0] <= 'z' ? p1[0]-0x20 : 0)) : 0);
-			char drive2 = (p2 && p2[1] && p2[2] == ':' ? (p2[1] >= 'A' && p2[1] <= 'Z' ? p2[1] : (p2[1] >= 'a' && p2[1] <= 'z' ? p2[1]-0x20 : 0)) : 0);
+			char drive1 = (      p1[0] && p1[p1[1] == ':' ? 2 : 1] <= ' ' ? (p1[0] >= 'A' && p1[0] <= 'Z' ? p1[0] : (p1[0] >= 'a' && p1[0] <= 'z' ? p1[0]-0x20 : 0)) : 0);
+			char drive2 = (p2 && p2[1] && p2[p2[2] == ':' ? 3 : 2] <= ' ' ? (p2[1] >= 'A' && p2[1] <= 'Z' ? p2[1] : (p2[1] >= 'a' && p2[1] <= 'z' ? p2[1]-0x20 : 0)) : 0);
 			if (!drive1) { WriteOut("Usage: REMOUNT [olddrive:] [newdrive:]\n"); return; }
 			if (!drive2) { drive2 = drive1; drive1 = DOS_GetDefaultDrive()+'A'; }
-			if (!Drives[drive1-'A']) { WriteOut("Drive %c: does not exist\n", drive1); return; }
-			if (Drives[drive2-'A']) { WriteOut("Drive %c: already exists\n", drive2); return; }
+			if (!DBP_IsMounted(drive1)) { WriteOut("Drive %c: does not exist\n", drive1); return; }
+			if ( DBP_IsMounted(drive2)) { WriteOut("Drive %c: already exists\n", drive2); return; }
 			WriteOut("Remounting %c: to %c:\n", drive1, drive2);
 			DBP_Remount(drive1, drive2);
 		}
@@ -2071,6 +2098,8 @@ struct DBP_BufferDrawing
 
 	static void AlphaBlendFillRect(DBP_Buffer& buf, int x, int y, int w, int h, Bit32u col)
 	{
+		Bit32u alpha = ((col & 0xFF000000) >> 24) + (dbp_alphablend_base ? dbp_alphablend_base : 0x80);
+		col = ((alpha > 0xFF ? 0xFF : alpha) << 24) | (col & 0xFFFFFF);
 		for (Bit32u *py = buf.video + buf.width * y + x; h--; py += buf.width)
 			for (Bit32u *p = py, *pEnd = p + w; p != pEnd; p++)
 				AlphaBlend(p, col);
@@ -2247,7 +2276,11 @@ static void DBP_StartMapper()
 			if ((result == IT_EXEC || result == IT_DEL) && edit)
 			{
 				Bit16u bind_key = list[sel].info;
-				if (edit->device == RETRO_DEVICE_ANALOG) // Binding to an axis
+				if (bind_key == 0) // deleting entry
+				{
+					dbp_input_binds.erase(dbp_input_binds.begin() + (edit - &dbp_input_binds[0]));
+				}
+				else if (edit->device == RETRO_DEVICE_ANALOG) // Binding to an axis
 				{
 					if (edit->evt != DBPET_AXISMAPPAIR && edit->evt != _DBPET_MAX) DBP_PadMapping::ForceAxisMapPair(*edit);
 					edit->evt = DBPET_AXISMAPPAIR;
@@ -2264,8 +2297,6 @@ static void DBP_StartMapper()
 					edit->evt = DBP_SPECIALMAPPING(bind_key).evt;
 					edit->meta = DBP_SPECIALMAPPING(bind_key).meta;
 				}
-				if (edit->meta == 0)
-					dbp_input_binds.erase(dbp_input_binds.begin() + (edit - &dbp_input_binds[0]));
 				changed = true;
 				menu_top();
 			}
@@ -2309,20 +2340,21 @@ static void DBP_StartMapper()
 	{
 		static void gfx(DBP_Buffer& buf)
 		{
+			mp.UpdateHeld(input);
 			int lh = (buf.height >= 400 ? 16 : 8), w = buf.width / 8, h = buf.height / lh;
 			int l = w/2 - 18, r = l + 36, u = 4, d = h - 4, rows = (int)d - u, count = (int)mp.list.size();
 			bool scrollbar = (count > rows);
 			mp.UpdateScroll(rows);
 
 			int yStart = u*lh-5, yEnd = d*lh+5, yNum = yEnd-yStart, xStart = l*8-5, xNum = 5+(r-l)*8+5, xEnd = xStart + xNum;
-			AlphaBlendFillRect(buf, xStart, yStart, xNum, yNum, 0x90AA0000);
+			AlphaBlendFillRect(buf, xStart, yStart, xNum, yNum, 0xAA0000);
 			DrawRect(buf, xStart-1, yStart-1, xNum+2, yNum+2, 0xFFFFFFFF);
 			DrawRect(buf, xStart-2, yStart-2, xNum+4, yNum+4, 0x00000000);
 
-			AlphaBlendFillRect(buf, xStart, (u + mp.sel - mp.scroll) * lh, xNum - (scrollbar ? 12 : 0), lh, 0x80F08080);
+			AlphaBlendFillRect(buf, xStart, (u + mp.sel - mp.scroll) * lh, xNum - (scrollbar ? 12 : 0), lh, 0xF08080);
 
 			if (scrollbar)
-				AlphaBlendFillRect(buf, xEnd-10, yStart + yNum * mp.scroll / count, 8, yNum * rows / count, 0x80F08080);
+				AlphaBlendFillRect(buf, xEnd-10, yStart + yNum * mp.scroll / count, 8, yNum * rows / count, 0xF08080);
 
 			for (int i = mp.scroll; i != count && i != (mp.scroll + rows); i++)
 				Print(buf, lh, l+2, u + i - mp.scroll, mp.list[i].str.c_str());
@@ -2442,10 +2474,10 @@ static void DBP_StartOnScreenKeyboard()
 					KBD_KEYS kbd_key = keyboard_keys[row][k - keyboard_rows[row]];
 					if (hovered) osk.hovered_key = kbd_key;
 
-					Bit32u col = (osk.pressed_key == kbd_key ? 0x808888FF : 
-							(osk.held[kbd_key] ? 0x80A0A000 :
-							(hovered ? 0x800000FF :
-							0x80FF0000)));
+					Bit32u col = (osk.pressed_key == kbd_key ? 0x8888FF : 
+							(osk.held[kbd_key] ? 0xA0A000 :
+							(hovered ? 0x0000FF :
+							0xFF0000)));
 
 					AlphaBlendFillRect(buf, rl, rt, rr-rl, rb-rt, col);
 					for (int kx = rl-1; kx <= rr; kx++) { AlphaBlend(buf.video + (rt-1) * buf.width + kx, 0xA0000000); AlphaBlend(buf.video + rb * buf.width + kx, 0xA0000000); }
@@ -2570,7 +2602,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.9.0";
+	info->library_version  = "0.9.1";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|jrc|tc|m3u|m3u8|conf";
@@ -3251,7 +3283,7 @@ static bool check_variables()
 		dbp_bind_mousewheel = bind_mousewheel;
 		if (dbp_state > DBPSTATE_SHUTDOWN) refresh_input_binds();
 	}
-
+	dbp_alphablend_base = (Bit8u)((atoi(Variables::RetroGet("dosbox_pure_menu_transparency", "50")) * 0xFF + 50) / 100);
 	dbp_mouse_speed = (float)atof(Variables::RetroGet("dosbox_pure_mouse_speed_factor", "1.0"));
 	dbp_mouse_speed_x = (float)atof(Variables::RetroGet("dosbox_pure_mouse_speed_factor_x", "1.0"));
 
@@ -3334,7 +3366,7 @@ static bool init_dosbox(const char* path, bool firsttime, std::string* dosboxcon
 	{
 		bool haveconf1 = Drives['C'-'A']->FileExists("$C:\\DOSBOX.CON"+4); //8.3 filename in ZIPs
 		bool haveconf2 = Drives['C'-'A']->FileExists("$C:\\DOSBOX~1.CON"+4); //8.3 filename in local file systems
-		if (haveconf1 || haveconf2 || !strcasecmp(path_ext, "CONF"))
+		if (haveconf1 || haveconf2 || (path && !strcasecmp(path_ext, "CONF")))
 		{
 			std::string content;
 			FindAndReadDosFile((haveconf1 ? "$C:\\DOSBOX.CON" : haveconf2 ? "$C:\\DOSBOX~1.CON" : path), content);
@@ -3456,33 +3488,37 @@ static bool init_dosbox(const char* path, bool firsttime, std::string* dosboxcon
 		DBP_PadMapping::Load();
 	}
 
-	// 'Insert' the first found disc image, or reinsert it on core restart
-	if (!dbp_disk_eject_state && dbp_disk_image_index < dbp_images.size() && !Drives['A'-'A'] && !Drives['D'-'A'])
-		DBP_Mount(dbp_disk_image_index);
-
 	// Some games always want the joystick port to respond, so enable them always
 	JOYSTICK_Enable(0, true);
 	JOYSTICK_Enable(1, true);
 
-	DBP_ASSERT(DOS_GetDefaultDrive() == ('Z'-'A')); // Shell must start with Z:\AUTOEXEC.BAT
+	// If mounted, always switch to the C: drive directly (for puremenu, to run DOSBOX.BAT and to run the autoexec of the dosbox conf)
+	// For DBP we modified init_line to always run Z:\AUTOEXEC.BAT and not just any AUTOEXEC.BAT of the current drive/directory
+	DOS_SetDrive('C'-'A');
+
 	if (autoexec)
 	{
+		bool auto_mount = true;
 		autoexec->ExecuteDestroy();
-		if (!force_start_menu && Drives['C'-'A'] && Drives['C'-'A']->FileExists("DOSBOX.BAT"))
+		if (!force_start_menu && path && (!strcasecmp(path_ext, "EXE") || !strcasecmp(path_ext, "COM") || !strcasecmp(path_ext, "BAT")))
 		{
-			static_cast<Section_line*>(autoexec)->data += "@C:\n@DOSBOX.BAT\n";
+			((((static_cast<Section_line*>(autoexec)->data += '@') += path_file) += '\n') += "@Z:PUREMENU") += " -FINISH\n";
+		}
+		else if (!force_start_menu && Drives['C'-'A'] && Drives['C'-'A']->FileExists("DOSBOX.BAT"))
+		{
+			((static_cast<Section_line*>(autoexec)->data += '@') += "DOSBOX.BAT") += '\n';
+			auto_mount = false;
 		}
 		else
 		{
-			// Always launch puremenu, to tell us the shell was fully started
-			((static_cast<Section_line*>(autoexec)->data += "@PUREMENU") += (force_start_menu ? "" : " -BOOT")) += '\n';
+			// Boot into puremenu, it will take care of further auto start options
+			((static_cast<Section_line*>(autoexec)->data += "@Z:PUREMENU") += (force_start_menu ? "" : " -BOOT")) += '\n';
 		}
 		autoexec->ExecuteInit();
-	}
-	else
-	{
-		// switch to the mounted local file system path to run the autoexec of the dosbox conf
-		DOS_SetDrive('C'-'A');
+
+		// 'Insert' the first found disc image, or reinsert it on core restart
+		if (auto_mount && !dbp_disk_eject_state && dbp_disk_image_index < dbp_images.size() && !DBP_IsMounted('A') && !DBP_IsMounted('D'))
+			DBP_Mount(dbp_disk_image_index);
 	}
 
 	struct Local
@@ -3575,7 +3611,7 @@ void retro_init(void) //#3
 			}
 			else
 			{
-				if (!Drives['A'-'A'] && !Drives['D'-'A'])
+				if (!DBP_IsMounted('A') && !DBP_IsMounted('D'))
 					DBP_Mount(dbp_disk_image_index);
 			}
 			dbp_disk_eject_state = ejected;
