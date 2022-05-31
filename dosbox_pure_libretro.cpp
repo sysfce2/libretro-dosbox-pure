@@ -523,7 +523,7 @@ static unsigned DBP_AppendImage(const char* entry, bool sorted)
 		if (dbp_images[insert_index].path == entry) return insert_index;
 		if (sorted && dbp_images[insert_index].path > entry) { break; }
 	}
-	dbp_images.insert(dbp_images.begin() + insert_index, {});
+	dbp_images.insert(dbp_images.begin() + insert_index, DBP_Image());
 	dbp_images[insert_index].path = entry;
 	return insert_index;
 }
@@ -2649,7 +2649,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.9.2";
+	info->library_version  = "0.9.3";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|jrc|tc|m3u|m3u8|conf";
@@ -3431,7 +3431,11 @@ static bool init_dosbox(const char* path, bool firsttime, std::string* dosboxcon
 
 	if (!Drives['C'-'A'])
 	{
-		if (!union_underlay) { union_underlay = new memoryDrive(); DBP_SetDriveLabelFromContentPath(union_underlay, path, 'C', path_file, path_ext); }
+		if (!union_underlay)
+		{
+			union_underlay = new memoryDrive();
+			if (path) DBP_SetDriveLabelFromContentPath(union_underlay, path, 'C', path_file, path_ext);
+		}
 		unionDrive* uni = new unionDrive(*union_underlay, (save_file.empty() ? NULL : &save_file[0]), true);
 		Drives['C'-'A'] = uni;
 		mem_writeb(Real2Phys(dos.tables.mediaid) + ('C'-'A') * 9, uni->GetMediaByte());
