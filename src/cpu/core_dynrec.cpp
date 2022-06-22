@@ -91,6 +91,8 @@
 
 // access to a general register
 #define DRCD_REG_VAL(reg) (&cpu_regs.regs[reg].dword)
+// access to the flags register
+#define DRCD_REG_FLAGS (&cpu_regs.flags)
 // access to a segment register
 #define DRCD_SEG_VAL(seg) (&Segs.val[seg])
 // access to the physical value of a segment register/selector
@@ -112,7 +114,8 @@ enum BlockReturn {
 #endif
 	BR_Iret,
 	BR_CallBack,
-	BR_SMCBlock
+	BR_SMCBlock,
+	BR_Trap
 };
 
 // identificator to signal self-modification of the currently executed block
@@ -223,6 +226,8 @@ Bits CPU_Core_Dynrec_Run(void) {
 				Bits nc_retcode=CPU_Core_Normal_Run();
 				if (!nc_retcode) {
 					CPU_Cycles=old_cycles-1;
+					if (old_cycles <= 1)
+						return CBRET_NONE;
 					continue;
 				}
 				CPU_CycleLeft+=old_cycles;
@@ -303,6 +308,19 @@ run_block:
 			if (block) goto run_block;
 			break;
 
+		//DBP: Added trap flag emulation after POPF in dynamic core fix by koolkdev (https://sourceforge.net/p/dosbox/patches/291/)
+		case BR_Trap:
+			// trapflag is set, switch to the trap-aware decoder
+#if C_DEBUG
+#if C_HEAVY_DEBUG
+			if (DEBUG_HeavyIsBreakpoint()) {
+				return debugCallback;
+			}
+#endif
+#endif
+			cpudecoder=CPU_Core_Dynrec_Trap_Run;
+			return CBRET_NONE;
+
 		default:
 			E_Exit("Invalid return code %d", ret);
 		}
@@ -334,12 +352,16 @@ void CPU_Core_Dynrec_Init(void) {
 
 void CPU_Core_Dynrec_Cache_Init(bool enable_cache) {
 	// Initialize code cache and dynamic blocks
-	cache_init(enable_cache);
+	//DBP: Fix turning dynamic core on and off
+	//cache_init(enable_cache);
+	if (enable_cache && cache_initialized) DBPSerialize_cache_reset();
+	else if (enable_cache && !cache_initialized) cache_init(true);
+	else if (!enable_cache && cache_initialized) cache_close();
 }
 
-void CPU_Core_Dynrec_Cache_Close(void) {
-	cache_close();
-}
+//void CPU_Core_Dynrec_Cache_Close(void) {
+//	cache_close();
+//}
 
 #include <dbp_serialize.h>
 
@@ -353,11 +375,7 @@ void DBPSerialize_CPU_Core_Dynrec(DBPArchive& ar)
 		.SerializeArray(core_dynrec.protected_regs);
 
 	if (ar.mode == DBPArchive::MODE_LOAD)
-	{
-		if (stored_initialized && cache_initialized) DBPSerialize_cache_reset();
-		else if (stored_initialized && !cache_initialized) cache_init(true);
-		else if (!stored_initialized && cache_initialized) cache_close();
-	}
+		CPU_Core_Dynrec_Cache_Init(stored_initialized);
 }
 
 #endif

@@ -32,7 +32,7 @@
 //#undef OS2
 #endif
 
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__i386__) || _M_IX86 || defined(__x86_64__) || _M_AMD64
 #define C_UNALIGNED_MEMORY 1 /* Define to 1 to use a unaligned memory access */
 #endif
 
@@ -49,7 +49,7 @@
 /* #undef C_MODEM */ /* Define to 1 to enable internal modem support, requires SDL_net */
 /* #undef C_SDL_SOUND */ /* Define to 1 to enable SDL_sound support */
 
-// ----- Disabled native interfaces and features
+// ----- Disabled native interfaces and legacy features
 //#define C_DBP_NATIVE_MIDI
 //#define C_DBP_NATIVE_CDROM //(also needs SDL to work)
 //#define C_DBP_NATIVE_OVERLAY
@@ -68,17 +68,22 @@
 //#define C_DBP_ENABLE_MESSAGEFILE
 //#define C_DBP_ENABLE_AUTOLOCK
 //#define C_DBP_ENABLE_DISKSWAP
+//#define C_DBP_ENABLE_SCALERCACHE
 
 // ----- Enabled new features
 #define C_DBP_LIBRETRO
 #define C_DBP_CUSTOMTIMING
+#define C_DBP_PAGE_FAULT_QUEUE_WIPE
 #define C_DBP_HAVE_FPATH_NOCASE
 #define C_DBP_SUPPORT_CDROM_MOUNT_DOSFILE
 #define C_DBP_SUPPORT_DISK_MOUNT_DOSFILE
+#define C_DBP_SUPPORT_DISK_FAT_EMULATOR
 #define C_DBP_SUPPORT_MIDI_TSF
 #define C_DBP_SUPPORT_MIDI_RETRO
 #define C_DBP_SUPPORT_MIDI_MT32
 #define C_DBP_ENABLE_NUKEDOPL3
+#define C_DBP_ENABLE_IDE
+#define C_DBP_ENABLE_VOODOO
 
 // ----- DBP ASSERT MACRO
 #ifdef NDEBUG

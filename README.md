@@ -5,12 +5,13 @@ built for RetroArch/Libretro aiming for simplicity and ease of use.
 
 ![Logo](images/logo.png)
 
-* [Download](#download)
-* [Install](#install)
+* [How To Use](#how-to-use)
+* [Manual Install](#manual-install)
 * [Features](#features)
     * [Load games from ZIP](#load-games-from-zip)
     * [Store modifications in separate save files](#store-modifications-in-separate-save-files)
     * [Mount disk images from inside ZIP files](#mount-disk-images-from-inside-zip-files)
+    * [Installing an Operating System](#installing-an-operating-system)
     * [Start menu with auto start](#start-menu-with-auto-start)
     * [Automated controller mappings](#automated-controller-mappings)
     * [Mouse emulation](#mouse-emulation)
@@ -18,6 +19,7 @@ built for RetroArch/Libretro aiming for simplicity and ease of use.
     * [Joystick emulation](#joystick-emulation)
     * [On-screen keyboard](#on-screen-keyboard)
     * [Gamepad mapper](#gamepad-mapper)
+	* [3dfx Voodoo Emulation](#3dfx-voodoo-emulation)
     * [MIDI playback with SoundFonts](#midi-playback-with-soundfonts)
     * [Cheats support](#cheats-support)
     * [Save states](#save-states)
@@ -41,11 +43,15 @@ built for RetroArch/Libretro aiming for simplicity and ease of use.
     * [Linux](#linux)
 * [License](#license)
 
-## Download
-You can find a binary download for Windows, Linux and Raspberry Pi (Arm7) under the [Releases page](https://github.com/schellingb/dosbox-pure/releases/latest).
+## How To Use
+The easiest way to use this core is with the built-in core downloader feature of RetroArch.
 
-## Install
-Locate the directory where your libretro frontend stores its cores.  
+Just [get RetroArch](https://retroarch.com/?page=platforms) and select `Online Updater` -> `Core Downloader` -> `DOS (DOSBox-Pure)` and you're ready to go!
+
+## Manual Install
+You can find a binary download of the core for Windows, Linux and Raspberry Pi (Arm7) under the [Releases page here](https://github.com/schellingb/dosbox-pure/releases/latest).
+
+To install, locate the directory where your libretro frontend stores its cores.  
 In RetroArch, you can open the main menu and go to `Configuration File` -> `Load Configuration` -> `Parent Directory` -> `cores` to find it.  
 The release ZIP contains 2 files, `dosbox_pure_libretro.dll` (or `.so` for Linux) and `dosbox_pure_libretro.info`.  
 The `.dll` or `.so` file is to be extracted into the cores directory. The `.info` file goes into the `info` directory or into `cores` if it doesn't exist.
@@ -64,6 +70,33 @@ CD images (ISO or CUE) and floppy disk images (IMG/IMA/VHD/JRC/TC) can be mounte
 The system will automatically mount the first found disk image as the A: or D: drive.  
 Additional disks can be loaded or swapped by using the `Disc Control` menu in RetroArch.  
 The start menu also offers the option to mount or unmount an image.
+
+### Installing an Operating System
+When loading a content that contains a bootable CD-ROM image, the start menu will show an additional option
+`[ Boot and Install New Operating System ]`. Additionally it will also show when  both a CD-ROM image and a
+floppy disk image are loaded, so non-bootable install CDs can be used as well.
+
+With this option a hard disk image of selectable size (between 8 and 1024 MB) can be created after which
+the CD-ROM or floppy disk image will boot to install the operating system. Once the installation has completed,
+loading any content (for example a ZIP file) will have the option `[ Run Installed Operating System ]` to boot
+the created hard disk image as the C: drive and with the loaded content becoming the D: drive. If there are
+any CD-ROM images available they will appear as the E: drive.
+
+There are two core options related to this feature:
+
+- `System > Advanced > Discard Disk Modifications`: If set, while running an installed operating system,
+  modifications to the C: drive will not be saved permanently. This allows the content to be closed any
+  time without worry of file system or registry corruption. Make sure to finish setting up the OS
+  by setting the screen resolution and installing device drivers first before setting this option.
+- `System > Advanced > Force Normal Core in OS`: If you encounter program errors or crashes inside the
+  installed operating system, this option can be used to switch to a more compatible but slower
+  mode. The option can be toggled on and off as needed.
+
+It is also possible to create save states while running an installed operating system. This can be used
+to skip the startup sequence or even jump directly to the title screen of a game. Make sure to load the
+same operating system and do not modify the loaded ZIP file in any way otherwise the operating system
+will be very confused and most likely crash. To make things easier, set the operating system to 
+[auto start](#start-menu-with-auto-start) so it starts together with the content and skipping the start menu.
 
 ### Start menu with auto start
 ![Start Menu](images/startmenu.png)
@@ -127,6 +160,20 @@ To open it, click the "PAD MAPPER" button in the [On-screen keyboard](#on-screen
 It is available any time in-game and changes are immediately saved and applied when closing the mapper. Up to 4 functions can be mapped
 for any button/direction of the gamepad. A mapping can be to any function of the 3 emulated input devices: keyboard, mouse or joystick.
 
+### 3dfx Voodoo Emulation
+The core includes emulation of a 3dfx Voodoo PCI card. Compatible DOS games should work out of the box. If running an
+[installed operating system](#installing-an-operating-system) like Windows 95 or Windows 98, you can get the required drivers
+from [this site](https://www.philscomputerlab.com/drivers-for-voodoo.html). Download and launch voodoo_graphics_driver_kit_version_3.01.00.zip
+with the core, then run the operating system and install the driver via the control panel from the files on the D: drive.
+
+There are two core options related to this feature:
+
+- `Video > 3dfx Voodoo Emulation`: By default a 12 MB memory card with two texture mapping units is emulated.
+  It can be changed to a single TMU 4MB card or support can be disabled entirely.
+- `Video > 3dfx Voodoo Performance Settings`: Some options to modify the rendering behavior are available. Setting
+  it to 'low quality' only gives a small performance improvement. Disabling multi-threading is possible for example
+  if your device gets too hot while using it but in general is not recommended.
+
 ### MIDI playback with SoundFonts
 If DOSBox Pure finds one or more `.SF2` sound font file in the `system` directory of the frontend, one of them
 can be selected via the `Audio > MIDI SoundFont` core option.  
@@ -170,10 +217,13 @@ scroll lock key. While game focus is active, the hotkeys are disabled and keyboa
 not cause retro pad button presses (which could cause multiple keys to be pressed at once).
 
 ### Loading a dosbox.conf file
-If a file named `dosbox.conf` exists in the loaded game directory (for example inside the ZIP file),
-DOSBox Pure will load the settings in that file and run the autoexec lines from it (if set).
-It is also possible to load a .conf file directly with the core and it will mount the directory
-of that file as the C: drive and then load it the same way.
+If a .conf file gets selected in the frontend, DOSBox Pure will mount the directory of that file as the C: drive and then use it.
+
+Alternatively, a .conf file can get loaded automatically depending on the 'Emulation > Loading of dosbox.conf' core option. There are two modes that can be enabled:
+- "Try 'dosbox.conf' in the loaded content (ZIP or folder)" - Will load C:\DOSBOX.CONF automatically if it exists in the mounted ZIP or path
+- "Try '.conf' with same name as loaded content (next to ZIP or folder)" - Will automatically load GAME.conf next to GAME.zip if it exists.
+
+If there is a .conf file, DOSBox Pure will load the settings in that file and run the autoexec lines from it (if set).
 
 ### ZIP files can be renamed to DOSZ
 If your libretro frontend wants to load the content of `.ZIP` files instead of sending it to

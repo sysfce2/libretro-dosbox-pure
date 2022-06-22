@@ -148,6 +148,9 @@
     <ClCompile Include="src\hardware\hardware.cpp">
       <Filter>src\hardware</Filter>
     </ClCompile>
+    <ClCompile Include="src\hardware\ide.cpp">
+      <Filter>src\hardware</Filter>
+    </ClCompile>
     <ClCompile Include="src\hardware\iohandler.cpp">
       <Filter>src\hardware</Filter>
     </ClCompile>
@@ -318,6 +321,9 @@
     </ClCompile>
     <ClCompile Include="dosbox_pure_libretro.cpp" />
     <ClCompile Include="keyb2joypad.cpp" />
+    <ClCompile Include="src\hardware\voodoo.cpp">
+      <Filter>src\hardware</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\bios.h">

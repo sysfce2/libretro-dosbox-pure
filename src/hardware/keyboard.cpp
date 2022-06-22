@@ -215,6 +215,17 @@ static void write_p64(Bitu /*port*/,Bitu val,Bitu /*iolen*/) {
 	case 0xd1:		/* Write to outport */
 		keyb.command=CMD_SETOUTPORT;
 		break;
+#ifdef C_DBP_LIBRETRO
+	//DBP: Added handle of keyboard controller restart request to support restart in Windows 98
+	case 0xf0: case 0xf1: case 0xf2: case 0xf3: case 0xf4: case 0xf5: case 0xf6: case 0xf7:
+	case 0xf8: case 0xf9: case 0xfa: case 0xfb: case 0xfc: case 0xfd: case 0xfe: case 0xff:
+		if (!(val & 1)) {
+			LOG_MSG("Restart by keyboard controller requested");
+			void DBP_OnBIOSReboot();
+			DBP_OnBIOSReboot();
+		}
+		break;
+#endif
 	default:
 		LOG(LOG_KEYBOARD,LOG_ERROR)("Port 64 write with val %" sBitfs(X) ,val);
 		break;
@@ -433,10 +444,18 @@ void DBPSerialize_Keyboard(DBPArchive& ar)
 		.Serialize(port_61_data);
 	if (ar.mode == DBPArchive::MODE_LOAD)
 	{
-		KEYBOARD_ClrBuffer();
-		bool DBP_IsKeyDown(KBD_KEYS key);
-		for (Bit8u k = (KBD_NONE + 1); k != KBD_LAST; k++)
-			if (keyb.down[k>>3] & (1<<(k&7)) && !DBP_IsKeyDown((KBD_KEYS)k))
-				KEYBOARD_AddKey((KBD_KEYS)k, false);
+		if (!(ar.flags & DBPArchive::FLAG_NORESETINPUT))
+		{
+			KEYBOARD_ClrBuffer();
+			bool DBP_IsKeyDown(KBD_KEYS key);
+			for (Bit8u k = (KBD_NONE + 1); k != KBD_LAST; k++)
+				if (keyb.down[k>>3] & (1<<(k&7)) && !DBP_IsKeyDown((KBD_KEYS)k))
+					KEYBOARD_AddKey((KBD_KEYS)k, false);
+		}
+		else if (keyb.scheduled)
+		{
+			PIC_RemoveEvents(KEYBOARD_TransferBuffer);
+			PIC_AddEvent(KEYBOARD_TransferBuffer,KEYDELAY);
+		}
 	}
 }

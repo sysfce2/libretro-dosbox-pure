@@ -410,6 +410,32 @@ static retro_core_option_v2_definition option_defs[] =
 		"s3"
 	},
 	{
+		"dosbox_pure_voodoo",
+		"3dfx Voodoo Emulation", NULL,
+		"Enables certain games with support for the Voodoo 3D accelerator." "\n"
+		"3dfx Voodoo Graphics SST-1/2 emulator by Aaron Giles and the MAME team (license: BSD-3-Clause)", NULL,
+		"Video",
+		{
+			{ "12mb", "Enabled - 12MB memory (default)" },
+			{ "4mb", "Enabled - 4MB memory" },
+			{ "off", "Disabled" },
+		},
+		"12mb",
+	},
+	{
+		"dosbox_pure_voodoo_perf",
+		"3dfx Voodoo Performance Settings", NULL,
+		"Options to tweak the behavior of the 3dfx Voodoo emulation.", NULL,
+		"Video",
+		{
+			{ "1", "Multi-threading (default)" },
+			{ "3", "Multi-threading, low quality" },
+			{ "2", "Low quality" },
+			{ "0", "None" },
+		},
+		"1",
+	},
+	{
 		"dosbox_pure_aspect_correction",
 		"Aspect Ratio Correction", NULL,
 		"When enabled, the core's aspect ratio is set to what a CRT monitor would display." "\n\n", NULL, //end of Video section
@@ -431,18 +457,18 @@ static retro_core_option_v2_definition option_defs[] =
 			{ "8",  "8 MB" },
 			{ "16", "16 MB (default)" },
 			{ "24", "24 MB" },
-			{ "32", "32 MB (unsafe)" },
-			{ "48", "48 MB (unsafe)" },
-			{ "64", "64 MB (unsafe)" },
-			{ "96", "96 MB (unsafe)" },
-			{ "128", "128 MB (unsafe)" },
-			{ "224", "224 MB (unsafe)" },
+			{ "32", "32 MB" },
+			{ "48", "48 MB" },
+			{ "64", "64 MB" },
+			{ "96", "96 MB" },
+			{ "128", "128 MB" },
+			{ "224", "224 MB" },
 		},
 		"16"
 	},
 	{
 		"dosbox_pure_cpu_type",
-		"CPU Type", NULL,
+		"CPU Type (restart required)", NULL,
 		"Emulated CPU type. Auto is the fastest choice." "\n"
 			"Games that require specific CPU type selection:" "\n"
 			"386 (prefetch): X-Men: Madness in The Murderworld, Terminator 1, Contra, Fifa International Soccer 1994" "\n"
@@ -480,6 +506,24 @@ static retro_core_option_v2_definition option_defs[] =
 		#else
 		"normal"
 		#endif
+	},
+	{
+		"dosbox_pure_bootos_ramdisk",
+		"Advanced > Discard Disk Modifications (restart required)", NULL,
+		"When running an installed operating system, modifications to the C: drive will not be saved permanently." "\n"
+		"This allows the content to be closed any time without worry of file system or registry corruption.", NULL, //end of System > Advanced section
+		"System",
+		{ { "false", "Off (default)" }, { "true", "On" } },
+		"false"
+	},
+	{
+		"dosbox_pure_bootos_forcenormal",
+		"Advanced > Force Normal Core in OS", NULL,
+		"The normal core can be more stable when running an installed operating system." "\n"
+		"This can be toggled on and off to navigate around crashes." "\n\n", NULL, //end of System > Advanced section
+		"System",
+		{ { "false", "Off (default)" }, { "true", "On" } },
+		"false"
 	},
 
 	// Audio
@@ -519,7 +563,7 @@ static retro_core_option_v2_definition option_defs[] =
 			{ "A240 I5 D1 H5",  "Port 0x240, IRQ 5, 8-Bit DMA 1, 16-bit DMA 5"  },
 			{ "A240 I10 D3 H7", "Port 0x240, IRQ 10, 8-Bit DMA 3, 16-bit DMA 7" },
 			{ "A280 I10 D0 H6", "Port 0x280, IRQ 10, 8-Bit DMA 0, 16-bit DMA 6" },
-			{ "A210 I5 D1 H5",  "Port 0x210, IRQ 5, 8-Bit DMA 1, 16-bit DMA 5"  },
+			{ "A280 I5 D1 H5",  "Port 0x280, IRQ 5, 8-Bit DMA 1, 16-bit DMA 5"  },
 		},
 		"A220 I7 D1 H5"
 	},

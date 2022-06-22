@@ -116,7 +116,8 @@ enum BlockReturn {
 	BR_Opcode,
 	BR_Iret,
 	BR_CallBack,
-	BR_SMCBlock
+	BR_SMCBlock,
+	BR_Trap
 };
 
 #define SMC_CURRENT_BLOCK	0xffff
@@ -293,6 +294,8 @@ restart_core:
 			Bits nc_retcode=CPU_Core_Normal_Run();
 			if (!nc_retcode) {
 				CPU_Cycles=old_cycles-1;
+				if (old_cycles <= 1)
+					return CBRET_NONE;
 				goto restart_core;
 			}
 			CPU_CycleLeft+=old_cycles;
@@ -360,6 +363,18 @@ run_block:
 			}
 		}
 		goto restart_core;
+	//DBP: Added trap flag emulation after POPF in dynamic core fix by koolkdev (https://sourceforge.net/p/dosbox/patches/291/)
+	case BR_Trap:
+		// trapflag is set, switch to the trap-aware decoder
+#if C_DEBUG
+#if C_HEAVY_DEBUG
+		if (DEBUG_HeavyIsBreakpoint()) {
+			return debugCallback;
+		}
+#endif
+#endif
+		cpudecoder=CPU_Core_Dyn_X86_Trap_Run;
+		return CBRET_NONE;
 	}
 	return CBRET_NONE;
 }
@@ -454,14 +469,18 @@ void CPU_Core_Dyn_X86_Init(void) {
 
 void CPU_Core_Dyn_X86_Cache_Init(bool enable_cache) {
 	/* Initialize code cache and dynamic blocks */
-	cache_init(enable_cache);
+	//DBP: Fix turning dynamic core on and off
+	//cache_init(enable_cache);
+	if (enable_cache && cache_initialized) DBPSerialize_cache_reset();
+	else if (enable_cache && !cache_initialized) cache_init(true);
+	else if (!enable_cache && cache_initialized) { cache_close(); gen_init(); }
 }
 
-void CPU_Core_Dyn_X86_Cache_Close(void) {
-	cache_close();
-	//DBP: gen_init needs to be called to reset gen_runcode, otherwise DOSBox crashes once cache is used again
-	gen_init();
-}
+//void CPU_Core_Dyn_X86_Cache_Close(void) {
+//	cache_close();
+//	//DBP: gen_init needs to be called to reset gen_runcode, otherwise DOSBox crashes once cache is used again
+//	gen_init();
+//}
 
 void CPU_Core_Dyn_X86_SetFPUMode(bool dh_fpu) {
 #if defined(X86_DYNFPU_DH_ENABLED)
@@ -486,11 +505,7 @@ void DBPSerialize_CPU_Core_Dyn_X86(DBPArchive& ar)
 	//It's not that simple (as it contains multiple pointers) but hopefully it isn't required to be serialized.
 
 	if (ar.mode == DBPArchive::MODE_LOAD)
-	{
-		if (stored_initialized && cache_initialized) DBPSerialize_cache_reset();
-		else if (stored_initialized && !cache_initialized) cache_init(true);
-		else if (!stored_initialized && cache_initialized) { cache_close(); gen_init(); }
-	}
+		CPU_Core_Dyn_X86_Cache_Init(stored_initialized);
 }
 
 #endif
