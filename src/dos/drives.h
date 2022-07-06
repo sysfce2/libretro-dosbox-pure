@@ -183,6 +183,7 @@ public:
 	Bit8u readSector(Bit32u sectnum, void * data);
 	Bit8u writeSector(Bit32u sectnum, void * data);
 	Bit32u getAbsoluteSectFromBytePos(Bit32u startClustNum, Bit32u bytePos);
+	Bit32u getSectorCount(void);
 	Bit32u getSectorSize(void);
 	Bit32u getClusterSize(void);
 	Bit32u getAbsoluteSectFromChain(Bit32u startClustNum, Bit32u logicalSector);
@@ -194,6 +195,7 @@ public:
 	bool directoryChange(Bit32u dirClustNumber, direntry *useEntry, Bit32s entNum);
 	imageDisk *loadedDisk;
 	bool created_successfully;
+	Bit32u partSectOff;
 private:
 	Bit32u getClusterValue(Bit32u clustNum);
 	void setClusterValue(Bit32u clustNum, Bit32u clustValue);
@@ -221,7 +223,6 @@ private:
 	bool absolute;
 	Bit8u fattype;
 	Bit32u CountOfClusters;
-	Bit32u partSectOff;
 	Bit32u firstDataSector;
 	Bit32u firstRootDirSect;
 
@@ -485,6 +486,7 @@ private:
 
 //DBP: New drive types
 #define FALSE_SET_DOSERR(ERRNAME) (dos.errorcode = (DOSERR_##ERRNAME), false)
+#define TRUE_CLEAR_DOSERR() (dos.errorcode = 0, true)
 #define DOSPATH_REMOVE_ENDINGDOTS(VAR) char VAR##_buf[DOS_PATHLENGTH]; DrivePathRemoveEndingDots((const char**)&VAR, VAR##_buf)
 #define DOSPATH_REMOVE_ENDINGDOTS_KEEP(VAR) const char* VAR##_org = VAR; DOSPATH_REMOVE_ENDINGDOTS(VAR)
 void DrivePathRemoveEndingDots(const char** path, char path_buf[DOS_PATHLENGTH]);

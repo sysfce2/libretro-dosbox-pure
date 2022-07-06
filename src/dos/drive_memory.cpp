@@ -214,6 +214,7 @@ memoryDrive::~memoryDrive()
 
 bool memoryDrive::FileOpen(DOS_File * * file, char * name, Bit32u flags)
 {
+	if (!OPEN_CHECK_ACCESS_CODE(flags)) return FALSE_SET_DOSERR(ACCESS_CODE_INVALID);
 	DOSPATH_REMOVE_ENDINGDOTS_KEEP(name);
 	Memory_Entry* e = impl->Get(name);
 	if (!e || e->IsDirectory()) return FALSE_SET_DOSERR(FILE_NOT_FOUND);
@@ -374,7 +375,7 @@ bool memoryDrive::FileStat(const char* name, FileStat_Block * const stat_block)
 {
 	DOSPATH_REMOVE_ENDINGDOTS(name);
 	Memory_Entry* p = impl->Get(name);
-	if (!p) return FALSE_SET_DOSERR(FILE_NOT_FOUND);
+	if (!p) return false;
 	stat_block->attr = p->attr;
 	stat_block->size = (p->IsFile() ? p->AsFile()->Size() : 0);
 	stat_block->date = p->date;
@@ -386,7 +387,7 @@ bool memoryDrive::GetFileAttr(char * name, Bit16u * attr)
 {
 	DOSPATH_REMOVE_ENDINGDOTS(name);
 	Memory_Entry* p = impl->Get(name);
-	if (!p) return FALSE_SET_DOSERR(FILE_NOT_FOUND);
+	if (!p) return false;
 	*attr = p->attr;
 	return true;
 }

@@ -633,7 +633,7 @@ static std::string DBP_GetSaveFile(DBP_SaveFileType type, const char** out_filen
 				Bit8u arr[] = { (Bit8u)(size>>24), (Bit8u)(size>>16), (Bit8u)(size>>8), (Bit8u)(size), (Bit8u)(date>>8), (Bit8u)(date), (Bit8u)(time>>8), (Bit8u)(time), attr };
 				hash = DriveCalculateCRC32(arr, sizeof(arr), DriveCalculateCRC32((const Bit8u*)path, pathlen, hash));
 			}};
-			Bit32u hash = 0x11111111;
+			Bit32u hash = (Bit32u)(0x11111111 - 1024) + (Bit32u)atoi(retro_get_variable("dosbox_pure_bootos_dfreespace", "1024"));
 			DriveFileIterator(Drives['C'-'A'], Local::FileHash, (Bitu)&hash);
 			res.resize(res.size() + 32);
 			res.resize(res.size() - 32 + sprintf(&res[res.size() - 32], (hash == 0x11111111 ? ".sav" : "-%08X.sav"), hash));
@@ -659,7 +659,7 @@ static void DBP_SetDriveLabelFromContentPath(DOS_Drive* drive, const char *path,
 {
 	// Use content filename as drive label, cut off at file extension, the first occurence of a ( or [ character or right white space.
 	if (!path_file && !DBP_ExtractPathInfo(path, &path_file, NULL, &ext)) return;
-	char lbl[11+1], *lblend = lbl + (ext - path_file > 11 ? 11 : ext - 1 - path_file);
+	char lbl[11+1], *lblend = lbl + (ext - path_file > 11 ? 11 : ext - (*ext ? 1 : 0) - path_file);
 	memcpy(lbl, path_file, lblend - lbl);
 	for (char* c = lblend; c > lbl; c--) { if (c == lblend || *c == '(' || *c == '[' || (*c <= ' ' && !c[1])) *c = '\0'; }
 	if (forceAppendExtension && ext && ext[0])
@@ -698,7 +698,7 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, bool unmount_existing
 		FILE* zip_file_h = fopen_wrap(path, "rb");
 		if (!zip_file_h)
 		{
-			retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s", "ZIP", path);
+			retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s%s", "ZIP", path, "");
 			return NULL;
 		}
 		drive = new zipDrive(new rawFile(zip_file_h, false), dbp_legacy_save);
@@ -766,7 +766,7 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, bool unmount_existing
 		if (error)
 		{
 			delete drive;
-			retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s", "cdrom image", path);
+			retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s%s", "CD-ROM image", path, "");
 			return NULL;
 		}
 		cdrom = ((isoDrive*)drive)->GetInterface();
@@ -787,7 +787,7 @@ static DOS_Drive* DBP_Mount(unsigned disk_image_index = 0, bool unmount_existing
 		FILE* m3u_file_h = fopen_wrap(path, "rb");
 		if (!m3u_file_h)
 		{
-			retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s", "M3U", path);
+			retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s%s", "M3U", path, "");
 			return NULL;
 		}
 		fseek(m3u_file_h, 0, SEEK_END);
@@ -1612,8 +1612,10 @@ struct DBP_MenuState
 		for (int count = (int)list.size(); !result && sel_change;)
 		{
 			sel += sel_change;
-			while (sel >= count) sel = (sel_change > 1 ? count - 1 : 0);
-			while (sel < 0) sel = (sel_change < -1 ? 0 : count - 1);
+			if (sel >= 0 && sel < count) { }
+			else if (sel_change > 1) sel = count - 1;
+			else if (sel_change == -1) sel = count - 1;
+			else sel = scroll = 0;
 			if (list[sel].type != IT_NONE) break;
 			sel_change = (sel_change == -1 ? -1 : 1);
 		}
@@ -1733,7 +1735,31 @@ static void DBP_PureMenuProgram(Program** make)
 			first_shell->bf = new BatchFileBoot(imageDiskList['A'-'A'] ? 'A' : 'C');
 		}
 
-		static void BootOS(DBP_MenuState::ItemType result, int info, bool have_iso, bool isBiosReboot)
+		static bool BootOSMountIMG(char drive, const char* path, const char* type, bool needwritable, bool complainnotfound)
+		{
+			FILE* raw_file_h = NULL;
+			if (needwritable && (raw_file_h = fopen_wrap(path, "rb+")) != NULL) goto openok;
+			if ((raw_file_h = fopen_wrap(path, "rb")) == NULL)
+			{
+				if (complainnotfound)
+					retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s%s", type, path, "");
+				return false;
+			}
+			if (needwritable)
+			{
+				retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s%s", type, path, " (file is read-only!)");
+				fclose(raw_file_h);
+				return false;
+			}
+			openok:
+			DOS_File* df = new rawFile(raw_file_h, needwritable);
+			df->AddRef();
+			imageDiskList[drive-'A'] = new imageDisk(df, "", 0, true);
+			imageDiskList[drive-'A']->Set_GeometryForHardDisk();
+			return true;
+		}
+
+		static void BootOS(DBP_MenuState::ItemType result, Bit16s info, bool have_iso, bool isBiosReboot)
 		{
 			// Make sure we have at least 32 MB of RAM, if not set it to 64
 			if ((MEM_TotalPages() / 256) < 32)
@@ -1756,10 +1782,11 @@ static void DBP_PureMenuProgram(Program** make)
 				// Create a new empty hard disk image of the requested size
 				memoryDrive* memDrv = new memoryDrive();
 				DBP_SetDriveLabelFromContentPath(memDrv, path.c_str(), 'C', filename, path.c_str() + path.size() - 3);
-				imageDisk* memDsk = new imageDisk(memDrv, (Bit32u)info);
+				imageDisk* memDsk = new imageDisk(memDrv, (Bit32u)(info*8));
 				Bit32u heads, cyl, sect, sectSize;
 				memDsk->Get_Geometry(&heads, &cyl, &sect, &sectSize);
 				FILE* f = fopen_wrap(path.c_str(), "wb");
+				if (!f) { retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s%s", "OS image", path.c_str(), " (create file failed)"); return; }
 				for (Bit32u i = 0, total = heads * cyl * sect; i != total; i++) { Bit8u data[512]; memDsk->Read_AbsoluteSector(i, data); fwrite(data, 512, 1, f); }
 				fclose(f);
 				delete memDsk;
@@ -1767,8 +1794,8 @@ static void DBP_PureMenuProgram(Program** make)
 
 				// If using system directory index cache, append the new OS image to that now
 				if (dbp_system_cached)
-					if (FILE* f = fopen_wrap(DBP_GetSaveFile(SFT_SYSTEMDIR).append("DOSBoxPureMidiCache.txt").c_str(), "a"))
-						{ fprintf(f, "%s\n", filename); fclose(f); }
+					if (FILE* fc = fopen_wrap(DBP_GetSaveFile(SFT_SYSTEMDIR).append("DOSBoxPureMidiCache.txt").c_str(), "a"))
+						{ fprintf(fc, "%s\n", filename); fclose(fc); }
 
 				// Set last_info to this new image to support BIOS rebooting with it
 				last_result = DBP_MenuState::IT_BOOTOS;
@@ -1782,23 +1809,20 @@ static void DBP_PureMenuProgram(Program** make)
 				char newC = ((have_iso || DBP_IsMounted('D')) ? 'E' : 'D'); // alternative would be to do DBP_Remount('D', 'E'); and always use 'D'
 				if (imageDiskList['C'-'A'])
 					imageDiskList[newC-'A'] = imageDiskList['C'-'A'];
-				else if (Drives['C'-'A'])
+				else if (!BootOSMountIMG(newC, (dbp_content_path + ".img").c_str(), "D: drive image", true, false) && Drives['C'-'A'])
 				{
 					Bit32u save_hash = 0;
 					DBP_SetDriveLabelFromContentPath(Drives['C'-'A'], dbp_content_path.c_str(), 'C', NULL, NULL, true);
-					imageDiskList[newC-'A'] = new imageDisk(Drives['C'-'A'], 1024, DBP_GetSaveFile(SFT_VIRTUALDISK, NULL, &save_hash).c_str(), save_hash, &dbp_vdisk_filter);
+					std::string save_path = DBP_GetSaveFile(SFT_VIRTUALDISK, NULL, &save_hash);
+					imageDiskList[newC-'A'] = new imageDisk(Drives['C'-'A'], atoi(retro_get_variable("dosbox_pure_bootos_dfreespace", "1024")), save_path.c_str(), save_hash, &dbp_vdisk_filter);
 				}
 
-				static char ramdisk;
+				static char ramdisk; // static variable so it sticks across bios reboots
 				if (!ramdisk || !isBiosReboot) ramdisk = retro_get_variable("dosbox_pure_bootos_ramdisk", "false")[0];
 				if (result == DBP_MenuState::IT_INSTALLOS) ramdisk = 'f'; // must be false while installing os
 
 				// Now mount OS hard disk image as C: drive
-				bool writable; // just passing this opens the file writable
-				DOS_File* df = FindAndOpenDosFile(path.c_str(), NULL, (ramdisk == 't' ? NULL : &writable));
-				if (!df) { retro_notify(0, RETRO_LOG_ERROR, "Unable to open %s file: %s", "OS image", path.c_str()); return; }
-				imageDiskList['C'-'A'] = new imageDisk(df, "", 0, true);
-				imageDiskList['C'-'A']->Set_GeometryForHardDisk();
+				BootOSMountIMG('C', path.c_str(), "OS image", (ramdisk != 't'), true);
 			}
 			else if (!imageDiskList['C'-'A'] && Drives['C'-'A'])
 			{
@@ -2131,14 +2155,25 @@ static void DBP_PureMenuProgram(Program** make)
 					list.clear();
 					list.emplace_back(IT_NONE, ATTR_HEADER, "Hard Disk Size For Install");
 					list.emplace_back(IT_NONE);
-					char buf[128];
-					for (Bit16s sz = 0; sz <= 2048; sz = (sz ? sz * 2 : 8))
-						list.emplace_back(IT_INSTALLOS, sz, (sz && sprintf(buf, "%d MB Hard Disk", sz) ? buf : "No Hard Disk"));
-					list.emplace_back(IT_NONE);
-					list.emplace_back(IT_NONE, ATTR_WARN, "This will create the hard disk image in the following location:");
+					list.emplace_back(IT_NONE, ATTR_WARN, "Create a new hard disk image in the following location:");
 					if (filename > &osimg[0]) { list.emplace_back(IT_NONE, ATTR_WARN); list.back().str.assign(&osimg[0], filename - &osimg[0]); }
 					list.emplace_back(IT_NONE, ATTR_WARN, filename);
-					sel = 9;
+					list.emplace_back(IT_NONE);
+					char buf[128];
+					for (Bit16s sz = 16/8; sz <= 64*1024/8; sz += (sz < 4096/8 ? sz : (sz < 32*1024/8 ? 4096/8 : 8192/8)))
+					{
+						list.emplace_back(IT_INSTALLOS, sz, (sprintf(buf, "%3d %cB Hard Disk", (sz < 1024/8 ? sz*8 : sz*8/1024), (sz < 1024/8 ? 'M' : 'G')),buf));
+						if (sz == 2048/8)
+						{
+							list.emplace_back(IT_NONE);
+							list.emplace_back(IT_NONE, ATTR_WARN, "Hard disk images over 2GB will be formatted with FAT32");
+							list.emplace_back(IT_NONE, ATTR_WARN, "NOTE: FAT32 is only supported in Windows 95C and newer");
+							list.emplace_back(IT_NONE);
+						}
+					}
+					list.emplace_back(IT_NONE);
+					list.emplace_back(IT_INSTALLOS, 0, "[ Boot Only Without Creating Hard Disk Image ]");
+					sel = (filename > &osimg[0] ? 11 : 10);
 					scroll = 0;
 					result = IT_NONE;
 					RedrawScreen(false);
@@ -2244,7 +2279,7 @@ static void DBP_PureMenuProgram(Program** make)
 			bool always_show_menu = (dbp_menu_time == (char)-1 || (on_finish && (DBP_GetTicks() - dbp_lastmenuticks) < 500));
 			dbp_lastmenuticks = DBP_GetTicks();
 
-			bool isBiosReboot = (on_boot && dbp_biosreboot && (last_result == IT_BOOTIMG || last_result == IT_BOOTOS || last_result == IT_INSTALLOS));
+			bool isBiosReboot = (dbp_biosreboot && (last_result == IT_BOOTIMG || last_result == IT_BOOTOS || last_result == IT_INSTALLOS));
 			if (!isBiosReboot) RefreshFileList(true);
 			ReadAutoBoot(isBiosReboot);
 
@@ -2910,7 +2945,7 @@ void retro_get_system_info(struct retro_system_info *info) // #1
 {
 	memset(info, 0, sizeof(*info));
 	info->library_name     = "DOSBox-pure";
-	info->library_version  = "0.9.6";
+	info->library_version  = "0.9.7";
 	info->need_fullpath    = true;
 	info->block_extract    = true;
 	info->valid_extensions = "zip|dosz|exe|com|bat|iso|cue|ins|img|ima|vhd|jrc|tc|m3u|m3u8|conf";
@@ -3713,11 +3748,11 @@ static bool init_dosbox(const char* path, bool firsttime, std::string* dosboxcon
 	}
 
 	// A reboot can happen during the first frame if puremenu wants to change DOSBox machine config at which point we cannot request input_state yet (RetroArch would crash)
-	bool force_start_menu = ((!input_state_cb || dbp_biosreboot) ? false : (
+	bool force_start_menu = (dbp_biosreboot ? true : (!input_state_cb ? false : (
 		input_state_cb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_LSHIFT) ||
 		input_state_cb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_RSHIFT) ||
 		input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2) ||
-		input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2)));
+		input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2))));
 
 	if (dbp_conf_loading != 'f' && !force_start_menu && !dosboxconf)
 	{
@@ -3864,7 +3899,7 @@ static bool init_dosbox(const char* path, bool firsttime, std::string* dosboxcon
 		autoexec->ExecuteDestroy();
 		if (!force_start_menu && path && (!strcasecmp(path_ext, "EXE") || !strcasecmp(path_ext, "COM") || !strcasecmp(path_ext, "BAT")))
 		{
-			((((static_cast<Section_line*>(autoexec)->data += '@') += path_file) += '\n') += "@Z:PUREMENU") += " -FINISH\n";
+			(((((static_cast<Section_line*>(autoexec)->data += '@') += ((path_ext[0]|0x20) == 'b' ? "call " : "")) += path_file) += '\n') += "@Z:PUREMENU") += " -FINISH\n";
 		}
 		else if (!force_start_menu && Drives['C'-'A'] && Drives['C'-'A']->FileExists("DOSBOX.BAT"))
 		{
@@ -4619,7 +4654,15 @@ void retro_deinit(void) { }
 
 // UTF8 fopen
 #include "libretro-common/include/compat/fopen_utf8.h"
-FILE *fopen_wrap(const char *path, const char *mode) { return (FILE*)fopen_utf8(path, mode); }
+FILE *fopen_wrap(const char *path, const char *mode)
+{
+	#ifdef WIN32
+	for (const unsigned char* p = (unsigned char*)path; *p; p++)
+		if (*p >= 0x80)
+			return (FILE*)fopen_utf8(path, mode);
+	#endif
+	return fopen(path, mode);
+}
 #ifndef STATIC_LINKING
 #include "libretro-common/compat/fopen_utf8.c"
 #include "libretro-common/compat/compat_strl.c"
@@ -4633,7 +4676,7 @@ bool fpath_nocase(char* path)
 	if (stat(path, &test) == 0) return true; // exists as is
 
 	#ifdef WIN32
-	// We also could just return false here because file paths are not case senstive on Windows
+	// If stat could handle utf8 strings, we just return false here because paths are not case senstive on Windows
 	size_t rootlen = ((path[1] == ':' && (path[2] == '/' || path[2] == '\\')) ? 3 : 0);
 	#else
 	size_t rootlen = ((path[0] == '/' || path[0] == '\\') ? 1 : 0);

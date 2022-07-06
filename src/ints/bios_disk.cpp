@@ -270,7 +270,7 @@ struct fatFromDOSDrive
 							{
 								char c = *le->Name(j);
 								if (c == '\0') { lossy |= (niext && ni - niext > 3); break; }
-								if (c == '.') { if (ni > 8) { ni = 8; } if (!ni || niext) { lossy = 1; } niext = ni; continue; }
+								if (c == '.') { if (ni > 8) { memset(entryname+8, ' ', 3); ni = 8; } if (!ni || niext) { lossy = 1; } niext = ni; continue; }
 								if (c == ' ' || ni == 11 || (ni == 8 && !niext)) { lossy = 1; continue; }
 								if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) { }
 								else if (c >= 'a' && c <= 'z') { c ^= 0x20; }
@@ -283,9 +283,9 @@ struct fatFromDOSDrive
 						if (niext && niext != 8)
 							for (int i = 2; i >= 0; i--)
 								entryname[8+i] = entryname[niext+i], entryname[niext+i] = ' ';
-						if (niext && ni - niext > 3)
-							for (int i = (ni - niext - 1); i >= 3; i--)
-								entryname[niext + i] = ' ';
+						if (niext && niext <= 4 && ni - niext > 3)
+							for (int i = niext + 3; i != 8; i++)
+								entryname[i] = ' ';
 
 						if (lossy)
 						{
@@ -330,7 +330,7 @@ struct fatFromDOSDrive
 		drv->AllocationInfo(&drv_bytes_sector, &drv_sectors_cluster, &drv_total_clusters, &drv_free_clusters);
 		DriveFileIterator(drv, Iter::SumFileSize, (Bitu)&sum);
 
-		readOnly = (drv_free_clusters == 0);
+		readOnly = (drv_free_clusters == 0 || freeSpaceMB == 0);
 
 		const Bit32u addFreeMB = (readOnly ? 0 : freeSpaceMB), totalMB = (Bit32u)(sum.used_bytes / (1024*1024)) + addFreeMB + 1;
 		if      (totalMB >= 3072) { isFAT32 = true;  sectorsPerCluster = 64; } // 32 kb clusters ( 98304 ~        FAT entries)
@@ -416,8 +416,16 @@ struct fatFromDOSDrive
 		memset(&mbr, 0, sizeof(mbr));
 		var_write((Bit32u*)&mbr.booter[440], serial); //4 byte disk serial number
 		var_write(&mbr.pentry[0].bootflag, 0x80); //Active bootable
-		chs_write(mbr.pentry[0].beginchs, SECT_BOOT, SECTORSPERTRACK, HEADCOUNT);
-		chs_write(mbr.pentry[0].endchs, sect_disk_end - 1, SECTORSPERTRACK, HEADCOUNT);
+		if ((sect_disk_end - 1) / (HEADCOUNT * SECTORSPERTRACK) > 0x3FF)
+		{
+			mbr.pentry[0].beginchs[0] = mbr.pentry[0].beginchs[1] = mbr.pentry[0].beginchs[2] = 0;
+			mbr.pentry[0].endchs[0] = mbr.pentry[0].endchs[1] = mbr.pentry[0].endchs[2] = 0;
+		}
+		else
+		{
+			chs_write(mbr.pentry[0].beginchs, SECT_BOOT);
+			chs_write(mbr.pentry[0].endchs, sect_disk_end - 1);
+		}
 		var_write(&mbr.pentry[0].absSectStart, SECT_BOOT);
 		var_write(&mbr.pentry[0].partSize, partSize);
 		mbr.magic1 = 0x55; mbr.magic2 = 0xaa;
@@ -504,11 +512,11 @@ struct fatFromDOSDrive
 		}
 	}
 
-	static void chs_write(Bit8u* chs, Bit32u lba, Bit16u sectorspertrack, Bit16u headcount)
+	static void chs_write(Bit8u* chs, Bit32u lba)
 	{
-		Bit32u cylinder = lba / (headcount * sectorspertrack);
-		Bit32u head = (lba / sectorspertrack) % headcount;
-		Bit32u sector = (lba % sectorspertrack) + 1;
+		Bit32u cylinder = lba / (HEADCOUNT * SECTORSPERTRACK);
+		Bit32u head = (lba / SECTORSPERTRACK) % HEADCOUNT;
+		Bit32u sector = (lba % SECTORSPERTRACK) + 1;
 		DBP_ASSERT(head <= 0xFF && sector <= 0x3F && cylinder <= 0x3FF);
 		chs[0] = (Bit8u)(head & 0xFF);
 		chs[1] = (Bit8u)((sector & 0x3F) | ((cylinder >> 8) & 0x3));
@@ -640,13 +648,13 @@ struct fatFromDOSDrive
 		else if (sectnum >= sect_root_start) return &root[(sectnum - sect_root_start) * (BYTESPERSECTOR / sizeof(direntry))];
 		else if (sectnum >= sect_fat2_start) return &fat[(sectnum - sect_fat2_start) * BYTESPERSECTOR];
 		else if (sectnum >= sect_fat1_start) return &fat[(sectnum - sect_fat1_start) * BYTESPERSECTOR];
-		else if (sectnum == SECT_BOOT) return &bootsec;
+		else if (sectnum == SECT_BOOT) return &bootsec; // boot sector 1
 		else if (sectnum == SECT_MBR) return &mbr;
-		else if (sectnum == SECT_BOOT+1) return fsinfosec;
-		else if (sectnum == SECT_BOOT+2) return fsinfosec; // additional boot loader code (anything is ok for us but needs 0x55AA footer signature)
-		else if (sectnum == SECT_BOOT+6) return &bootsec; // boot sector copy
-		else if (sectnum == SECT_BOOT+7) return fsinfosec; // boot sector copy
-		else if (sectnum == SECT_BOOT+8) return fsinfosec; // boot sector copy
+		else if (sectnum == SECT_BOOT+1) return fsinfosec; // boot sector 2: fs information sector
+		else if (sectnum == SECT_BOOT+2) return fsinfosec; // boot sector 3: additional boot loader code (anything is ok for us but needs 0x55AA footer signature)
+		else if (sectnum == SECT_BOOT+6) return &bootsec;  // boot sector 1 copy
+		else if (sectnum == SECT_BOOT+7) return fsinfosec; // boot sector 2 copy
+		else if (sectnum == SECT_BOOT+8) return fsinfosec; // boot sector 3 copy
 		return NULL;
 	}
 
@@ -1095,7 +1103,7 @@ static Bit8u GetDosDriveNumber(Bit8u biosNum) {
 }
 
 static bool driveInactive(Bit8u driveNum) {
-	if(driveNum>=(2 + MAX_HDD_IMAGES)) {
+	if(driveNum>=MAX_DISK_IMAGES) {
 		LOG(LOG_BIOS,LOG_ERROR)("Disk %d non-existant", driveNum);
 		last_status = 0x01;
 		CALLBACK_SCF(true);
@@ -1201,7 +1209,7 @@ static Bitu INT13_DiskHandler(void) {
 			CALLBACK_SCF(true);
 			return CBRET_NONE;
 		}
-		if (!any_images) {
+		if (drivenum >= MAX_DISK_IMAGES || imageDiskList[drivenum] == NULL) {
 			if (drivenum >= DOS_DRIVES || !Drives[drivenum] || Drives[drivenum]->isRemovable()) {
 				reg_ah = 0x01;
 				CALLBACK_SCF(true);
@@ -1210,10 +1218,9 @@ static Bitu INT13_DiskHandler(void) {
 			// Inherit the Earth cdrom and Amberstar use it as a disk test
 			if (((reg_dl&0x80)==0x80) && (reg_dh==0) && ((reg_cl&0x3f)==1)) {
 				if (reg_ch==0) {
-					PhysPt ptr = PhysMake(SegValue(es),reg_bx);
 					// write some MBR data into buffer for Amberstar installer
-					mem_writeb(ptr+0x1be,0x80); // first partition is active
-					mem_writeb(ptr+0x1c2,0x06); // first partition is FAT16B
+					real_writeb(SegValue(es),reg_bx+0x1be,0x80); // first partition is active
+					real_writeb(SegValue(es),reg_bx+0x1c2,0x06); // first partition is FAT16B
 				}
 				reg_ah = 0;
 				CALLBACK_SCF(false);
