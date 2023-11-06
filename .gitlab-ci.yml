@@ -186,11 +186,11 @@ libretro-build-tvos-arm64:
 #    - .libretro-wiiu-static-retroarch-master
 #    - .core-defs
 
-## Nintendo Switch
-#libretro-build-libnx-aarch64:
-#  extends:
-#    - .libretro-libnx-static-retroarch-master
-#    - .core-defs
+# Nintendo Switch
+libretro-build-libnx-aarch64:
+  extends:
+    - .libretro-libnx-static-retroarch-master
+    - .core-defs
 
 # PlayStation Vita
 libretro-build-vita:
