@@ -128,7 +128,7 @@ else ifeq ($(platform),libnx)
   OUTNAME := dosbox_pure_libretro_libnx.a
   export DEPSDIR = $(CURDIR)
   include $(DEVKITPRO)/libnx/switch_rules
-  COMMONFLAGS += -D__SWITCH__ -DHAVE_LIBNX -march=armv8-a -mtune=cortex-a57 -mtp=soft
+  COMMONFLAGS += -I$(LIBNX)/include/ -D__SWITCH__ -DHAVE_LIBNX -march=armv8-a -mtune=cortex-a57 -mtp=soft
   COMMONFLAGS += -fPIC -fPIE -ffunction-sections -fdata-sections
   STATIC_LINKING = 1
 else ifeq ($(platform),gcw0)
