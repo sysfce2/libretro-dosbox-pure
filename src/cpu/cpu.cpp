@@ -2342,8 +2342,8 @@ public:
 		Prop_multival* p = section->Get_multival("cycles");
 		std::string type = p->GetSection()->Get_string("type");
 #ifdef C_DBP_LIBRETRO // use our custom cycle scaling
-		void DBP_CPU_ModifyCycles(const char*);
-		DBP_CPU_ModifyCycles(type.c_str());
+		void DBP_CPU_ModifyCycles(const char*, const char*);
+		DBP_CPU_ModifyCycles(type.c_str(), p->GetSection()->Get_string("parameters"));
 #else
 		std::string str ;
 		CommandLine cmd(0,p->GetSection()->Get_string("parameters"));
@@ -2542,7 +2542,6 @@ void CPU_Init(Section* sec) {
 //initialize static members
 bool CPU::inited=false;
 
-#ifdef C_DBP_PAGE_FAULT_QUEUE_WIPE
 void CPU_ResetCPUDecoder(const std::string& core)
 {
 	CPU_AutoDetermineMode &= ~(CPU_AUTODETERMINE_CORE|(CPU_AUTODETERMINE_CORE<<CPU_AUTODETERMINE_SHIFT));
@@ -2580,12 +2579,10 @@ void CPU_ResetCPUDecoder(const std::string& core)
 	#elif (C_DYNREC)
 	CPU_Core_Dynrec_Cache_Init(cpudecoder == &CPU_Core_Dynrec_Run);
 	#endif
-
 }
-#endif
 
 //This function is safer than setting new cycle settings through config (can cause FPU overflow crashes)
-void DBP_CPU_ModifyCycles(const char* val)
+void DBP_CPU_ModifyCycles(const char* val, const char* params)
 {
 	CPU_AutoDetermineMode &= ~(CPU_AUTODETERMINE_CYCLES|(CPU_AUTODETERMINE_CYCLES<<CPU_AUTODETERMINE_SHIFT));
 	if (val[0] == 'm') { //max
@@ -2602,7 +2599,7 @@ void DBP_CPU_ModifyCycles(const char* val)
 		}
 	} else {
 		CPU_CycleAutoAdjust = false;
-		CPU_CycleMax = atoi(val);
+		CPU_CycleMax = atoi(((val[0] == 'f' && params) ? params : val)); // handle "fixed" keyword
 		if (CPU_CycleMax < CPU_CYCLES_LOWER_LIMIT) CPU_CycleMax = CPU_CYCLES_LOWER_LIMIT;
 	}
 	CPU_CycleLeft = CPU_Cycles = 0;
