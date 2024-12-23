@@ -76,25 +76,25 @@ static retro_core_option_v2_definition option_defs[] =
 		"on"
 	},
 	{
-		"dosbox_pure_conf",
-		"Loading of dosbox.conf", NULL,
-		"DOSBox Pure is meant to be configured via core options but optionally supports loading of legacy .conf files." "\n\n", NULL, //end of Emulation section
-		"Emulation",
-		{
-			{ "false", "Disabled conf support (default)" },
-			{ "inside", "Try 'dosbox.conf' in the loaded content (ZIP or folder)" },
-			{ "outside", "Try '.conf' with same name as loaded content (next to ZIP or folder)" },
-		},
-		"false"
-	},
-	{
 		"dosbox_pure_strict_mode",
-		"Use Strict Mode", NULL,
+		"Advanced > Use Strict Mode", NULL,
 		"Disable the command line, running installed operating systems and using .BAT/.COM/.EXE/DOS.YML files from the save game.", NULL,
 		"Emulation",
 		{
 			{ "false", "Off" },
 			{ "true", "On" },
+		},
+		"false"
+	},
+	{
+		"dosbox_pure_conf",
+		"Advanced > Loading of dosbox.conf", NULL,
+		"DOSBox Pure is meant to be configured via core options but optionally supports loading of legacy .conf files.", NULL,
+		"Emulation",
+		{
+			{ "false", "Disabled conf support (default)" },
+			{ "inside", "Try 'dosbox.conf' in the loaded content (ZIP or folder)" },
+			{ "outside", "Try '.conf' with same name as loaded content (next to ZIP or folder)" },
 		},
 		"false"
 	},
@@ -165,9 +165,15 @@ static retro_core_option_v2_definition option_defs[] =
 		"In touchpad mode use drag to move, tap to click, two finger tap to right-click and press-and-hold to drag", NULL,
 		"Input",
 		{
+#if defined(ANDROID) || defined(DBP_IOS) || defined(HAVE_LIBNX) || defined(_3DS) || defined(WIIU) || defined(VITA)
+			{ "pad", "Touchpad mode (default, see description, best for touch screens)" },
+			{ "direct", "Direct controlled mouse (not supported by all games)" },
+			{ "true", "Virtual mouse" },
+#else
 			{ "true", "Virtual mouse (default)" },
 			{ "direct", "Direct controlled mouse (not supported by all games)" },
 			{ "pad", "Touchpad mode (see description, best for touch screens)" },
+#endif
 			{ "false", "Off (ignore mouse inputs)" },
 		},
 		"true"
@@ -225,6 +231,19 @@ static retro_core_option_v2_definition option_defs[] =
 			{ "4.0", "400%" }, { "4.2" , "420%" }, { "4.4", "440%" }, { "4.6",  "460%" }, { "4.8", "480%" }, { "5.0",  "500%" },
 		},
 		"1.0"
+	},
+	{
+		"dosbox_pure_actionwheel_inputs",
+		"Advanced > Action Wheel Inputs", NULL,
+		"Sets which inputs control the action wheel.", NULL,
+		"Input",
+		{
+			{ "14", "Right Stick, D-Pad, Mouse (Default)" }, { "6",  "Right Stick, D-Pad" }, { "10", "Right Stick, Mouse" }, { "2",  "Right Stick" },
+			{ "15", "Both Sticks, D-Pad, Mouse" }, { "7",  "Both Sticks, D-Pad" }, { "11", "Both Sticks, Mouse" }, { "3",  "Both Sticks" },
+			{ "13", "Left Stick, D-Pad, Mouse" }, { "5",  "Left Stick, D-Pad" }, { "9",  "Left Stick, Mouse" }, { "1",  "Left Stick" },
+			{ "12", "D-Pad, Mouse" }, { "4",  "D-Pad" }, { "8",  "Mouse" },
+		},
+		"14"
 	},
 	{
 		"dosbox_pure_auto_mapping",
@@ -323,9 +342,30 @@ static retro_core_option_v2_definition option_defs[] =
 		"auto"
 	},
 	{
+		"dosbox_pure_cycles_max",
+		"Detailed > Maximum Emulated Performance", NULL,
+		"With dynamic CPU speed (AUTO or MAX above), the maximum emulated performance level.", NULL,
+		"Performance",
+		{
+			{ "none",    "Unlimited" },
+			{ "315",     "8086/8088, 4.77 MHz from 1980 (315 cps)" },
+			{ "1320",    "286, 6 MHz from 1982 (1320 cps)" },
+			{ "2750",    "286, 12.5 MHz from 1985 (2750 cps)" },
+			{ "4720",    "386, 20 MHz from 1987 (4720 cps)" },
+			{ "7800",    "386DX, 33 MHz from 1989 (7800 cps)" },
+			{ "13400",   "486DX, 33 MHz from 1990 (13400 cps)" },
+			{ "26800",   "486DX2, 66 MHz from 1992 (26800 cps)" },
+			{ "77000",   "Pentium, 100 MHz from 1995 (77000 cps)" },
+			{ "200000",  "Pentium II, 300 MHz from 1997 (200000 cps)" },
+			{ "500000",  "Pentium III, 600 MHz from 1999 (500000 cps)" },
+			{ "1000000", "AMD Athlon, 1.2 GHz from 2000 (1000000 cps)" },
+		},
+		"auto"
+	},
+	{
 		"dosbox_pure_cycles_scale",
 		"Detailed > Performance Scale", NULL,
-		"Fine tune the emulated performance for specific needs." "\n\n", NULL, //end of Performance > Detailed section
+		"Fine tune the emulated performance for specific needs.", NULL,
 		"Performance",
 		{
 			{ "0.2",  "20%" }, { "0.25",  "25%" }, { "0.3",  "30%" }, { "0.35",  "35%" }, { "0.4",  "40%" }, { "0.45",  "45%" },
@@ -367,9 +407,9 @@ static retro_core_option_v2_definition option_defs[] =
 		{
 			{ "svga",     "SVGA (Super Video Graphics Array) (default)" },
 			{ "vga",      "VGA (Video Graphics Array)" },
-			{ "ega",      "EGA (Enhanced Graphics Adapter" },
+			{ "ega",      "EGA (Enhanced Graphics Adapter)" },
 			{ "cga",      "CGA (Color Graphics Adapter)" },
-			{ "tandy",    "Tandy (Tandy Graphics Adapter" },
+			{ "tandy",    "Tandy (Tandy Graphics Adapter)" },
 			{ "hercules", "Hercules (Hercules Graphics Card)" },
 			{ "pcjr",     "PCjr" },
 		},
@@ -439,31 +479,66 @@ static retro_core_option_v2_definition option_defs[] =
 		"3dfx Voodoo Graphics SST-1/2 emulator by Aaron Giles and the MAME team (license: BSD-3-Clause)", NULL,
 		"Video",
 		{
-			{ "12mb", "Enabled - 12MB memory (default)" },
-			{ "4mb", "Enabled - 4MB memory" },
+			{ "8mb", "Enabled - 8MB memory (default)" },
+			{ "12mb", "Enabled - 12MB memory, Dual Texture" },
+			{ "4mb", "Enabled - 4MB memory, Low Resolution Only" },
 			{ "off", "Disabled" },
 		},
-		"12mb",
+		"8mb",
 	},
 	{
 		"dosbox_pure_voodoo_perf",
-		"3dfx Voodoo Performance Settings", NULL,
-		"Options to tweak the behavior of the 3dfx Voodoo emulation.", NULL,
+		"3dfx Voodoo Performance", NULL,
+		"Options to tweak the behavior of the 3dfx Voodoo emulation." "\n"
+		"Switching to OpenGL requires a restart." "\n"
+		"If OpenGL is available, host-side 3D acceleration is used which can make 3D rendering much faster.\n"
+		"Auto will use OpenGL if it is the active video driver in the frontend.", NULL,
 		"Video",
 		{
-			{ "1", "Multi-threading (default)" },
-			{ "3", "Multi-threading, low quality" },
-			{ "2", "Low quality" },
-			{ "0", "None" },
+			{ "auto", "Auto (default)" },
+			{ "4", "Hardware OpenGL" },
+			{ "1", "Software Multi Threaded" },
+			{ "3", "Software Multi Threaded, low quality" },
+			{ "2", "Software Single Threaded, low quality" },
+			{ "0", "Software Single Threaded" },
+		},
+		"auto",
+	},
+	{
+		"dosbox_pure_voodoo_scale",
+		"3dfx Voodoo OpenGL Scaling", NULL,
+		"Increase the native resolution of the rendered image.", NULL,
+		"Video",
+		{
+			{ "1", "1x" }, { "2", "2x" }, { "3", "3x" }, { "4", "4x" }, { "5", "5x" }, { "6", "6x" }, { "7", "7x" }, { "8", "8x" },
 		},
 		"1",
 	},
 	{
+		"dosbox_pure_voodoo_gamma",
+		"3dfx Voodoo Gamma Correction", NULL,
+		"Change brightness of rendered 3dfx output.", NULL,
+		"Video",
+		{
+			{ "-10", "-10" }, { "-9", "-9" }, { "-8", "-8" }, { "-7", "-7" }, { "-6", "-6" }, { "-5", "-5" }, { "-4", "-4" }, { "-3", "-3" }, { "-2", "-2" }, { "-1", "-1" },
+			{ "0", "None" },
+			{ "1", "+1" }, { "2", "+2" }, { "3", "+3" }, { "4", "+4" }, { "5", "+5" }, { "6", "+6" }, { "7", "+7" }, { "8", "+8" }, { "9", "+9" }, { "10", "+10" },
+			{ "999", "Disable Gamma Correction" },
+		},
+		"-2",
+	},
+	{
 		"dosbox_pure_aspect_correction",
 		"Aspect Ratio Correction", NULL,
-		"When enabled, the core's aspect ratio is set to what a CRT monitor would display.", NULL,
+		"Adjust the core's aspect ratio to approximate what a CRT monitor would display.", NULL,
 		"Video",
-		{ { "false", "Off (default)" }, { "true", "On" } },
+		{
+			{ "false", "Off (default)" },
+			{ "true", "On (single-scan)" },
+			{ "doublescan", "On (double-scan when applicable)" },
+			{ "padded", "Padded to 4:3 (single-scan)" },
+			{ "padded-doublescan", "Padded to 4:3 (double-scan when applicable)" },
+		},
 		"false"
 	},
 	{
@@ -573,7 +648,7 @@ static retro_core_option_v2_definition option_defs[] =
 		"If the total size of the D: drive (data + free space) exceeds 2 GB, it can't be used in earlier versions of Windows 95." "\n"
 		"WARNING: Created save files are tied to this setting, so changing this will hide all existing D: drive changes.", NULL,
 		"System",
-		{ { "1024", "1GB (default)" }, { "2048", "2GB" }, { "4096", "4GB" }, { "8192", "8GB" } },
+		{ { "1024", "1GB (default)" }, { "2048", "2GB" }, { "4096", "4GB" }, { "8192", "8GB" }, { "discard", "Discard Changes to D:" }, { "hide", "Disable D: Hard Disk (use only CD-ROM)" } },
 		"1024"
 	},
 	{
@@ -637,7 +712,7 @@ static retro_core_option_v2_definition option_defs[] =
 		{
 			// dynamically filled in retro_init
 		},
-		"none"
+		"disabled"
 	},
 	{
 		"dosbox_pure_sblaster_type",
@@ -690,6 +765,14 @@ static retro_core_option_v2_definition option_defs[] =
 		"Audio",
 		{ { "false", "Off (default)" }, { "true", "On" } },
 		"false"
+	},
+	{
+		"dosbox_pure_tandysound",
+		"Advanced > Enable Tandy Sound Device (restart required)", NULL,
+		"Enable Tandy Sound Device emulation even when running without Tandy Graphics Adapter emulation.", NULL,
+		"Audio",
+		{ { "auto", "Off (default)" }, { "on", "On" } },
+		"auto"
 	},
 	{
 		"dosbox_pure_swapstereo",

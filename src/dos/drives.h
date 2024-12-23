@@ -1,6 +1,6 @@
 /*
  *  Copyright (C) 2002-2021  The DOSBox Team
- *  Copyright (C) 2020-2023  Bernhard Schelling
+ *  Copyright (C) 2020-2024  Bernhard Schelling
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -488,65 +488,82 @@ private:
 #define FALSE_SET_DOSERR(ERRNAME) (dos.errorcode = (DOSERR_##ERRNAME), false)
 #define DOSPATH_REMOVE_ENDINGDOTS(VAR) char VAR##_buf[DOS_PATHLENGTH]; DrivePathRemoveEndingDots((const char**)&VAR, VAR##_buf)
 #define DOSPATH_REMOVE_ENDINGDOTS_KEEP(VAR) const char* VAR##_org = VAR; DOSPATH_REMOVE_ENDINGDOTS(VAR)
+#define DTA_PATTERN_MATCH(NAME, PATTERN) (((PATTERN)[0] == '*' && (PATTERN)[8] == '.' && (PATTERN)[9] == '*') || WildFileCmp(NAME, PATTERN))
+#define DBP_8DOT3_INVALID_CHAR '-'
 void DrivePathRemoveEndingDots(const char** path, char path_buf[DOS_PATHLENGTH]);
-Bit8u DriveGetIndex(DOS_Drive* drv); // index in Drives array, returns DOS_DRIVES if not found
+Bit8u DriveGetIndex(DOS_Drive* drv); // index in Drives array, returns DOS_DRIVES if not found (includes shadows)
 bool DriveForceCloseFile(DOS_Drive* drv, const char* name);
 bool DriveFindDriveVolume(DOS_Drive* drv, char* dir_path, DOS_DTA & dta, bool fcb_findfirst);
-Bit32u DBP_Make8dot3FileName(char* target, Bit32u target_len, const char* source, Bit32u source_len);
+Bit32u DBP_Make8dot3FileName(char* target, Bit32u target_len, const char* source, Bit32u source_len, bool& was_changed);
 DOS_File *FindAndOpenDosFile(char const* filename, Bit32u *bsize = NULL, bool* writable = NULL, char const* relative_to = NULL);
 bool ReadAndClose(DOS_File *df, std::string& out, Bit32u maxsize = 1024*1024);
 Bit16u DriveReadFileBytes(DOS_Drive* drv, const char* path, Bit8u* outbuf, Bit16u numbytes);
 bool DriveCreateFile(DOS_Drive* drv, const char* path, const Bit8u* buf, Bit32u numbytes);
 Bit32u DriveCalculateCRC32(const Bit8u *ptr, size_t len, Bit32u crc = 0);
-void DriveFileIterator(DOS_Drive* drv, void(*func)(const char* path, bool is_dir, Bit32u size, Bit16u date, Bit16u time, Bit8u attr, Bitu data), Bitu data = 0);
+void DriveFileIterator(DOS_Drive* drv, void(*func)(const char* path, bool is_dir, Bit32u size, Bit16u date, Bit16u time, Bit8u attr, Bitu data), Bitu data = 0, const char* root = nullptr);
 
-template <typename TVal> struct StringToPointerHashMap
+template <typename TVal> struct BaseHashMap
 {
-	StringToPointerHashMap() : len(0), maxlen(0), keys(NULL), vals(NULL) { }
-	~StringToPointerHashMap() { free(keys); free(vals); }
+	INLINE BaseHashMap() { memset(this, 0, sizeof(*this)); }
+	INLINE ~BaseHashMap() { free(keys); free(vals); }
 
-	static Bit32u Hash(const char* str, Bit32u str_limit = 0xFFFF, Bit32u hash_init = (Bit32u)0x811c9dc5)
+	INLINE void Free() { this->~BaseHashMap(); memset(this, 0, sizeof(*this)); }
+	INLINE void Clear() { if (maxlen) memset(keys, len = 0, (maxlen + 1) * sizeof(Bit32u)); }
+
+	INLINE Bit32u Len() const { return len; }
+	INLINE Bit32u Capacity() const { return (maxlen ? maxlen + 1 : 0); }
+	INLINE TVal GetAtIndex(Bit32u idx) const { return (keys[idx] ? vals[idx] : NULL); }
+
+	template <typename TCast> struct Iterator
 	{
-		for (const char* e = str + str_limit; *str && str != e;)
-			hash_init = ((hash_init * (Bit32u)0x01000193) ^ (Bit32u)*(str++));
-		return hash_init;
-	}
+		BaseHashMap& map;
+		Bit32u index;
+		INLINE Iterator(BaseHashMap& _map, Bit32u _index) : map(_map), index(_map.NextIndex(_index - 1)) { }
+		INLINE TCast operator *() const { return (TCast)map.vals[index]; }
+		INLINE bool operator ==(const Iterator &other) const { return index == other.index; }
+		INLINE bool operator !=(const Iterator &other) const { return index != other.index; }
+		INLINE Iterator& operator ++() { index = map.NextIndex(index); return *this; }
+	};
 
-	TVal* Get(const char* str, Bit32u str_limit = 0xFFFF, Bit32u hash_init = (Bit32u)0x811c9dc5) const
+	INLINE Iterator<TVal> begin() { return Iterator<TVal>(*this, 0); }
+	INLINE Iterator<TVal> end() { return Iterator<TVal>(*this, (maxlen ? maxlen + 1 : 0)); }
+
+protected:
+	TVal* BaseGet(Bit32u key) const
 	{
 		if (len == 0) return NULL;
-		for (Bit32u key0 = Hash(str, str_limit, hash_init), key = (key0 ? key0 : 1), i = key;; i++)
+		for (Bit32u key1 = (key ? key : 1), i = key1;; i++)
 		{
-			if (keys[i &= maxlen] == key) return vals[i];
+			if (keys[i &= maxlen] == key1) return vals+i;
 			if (!keys[i]) return NULL;
 		}
 	}
 
-	void Put(const char* str, TVal* val, Bit32u str_limit = 0xFFFF, Bit32u hash_init = (Bit32u)0x811c9dc5)
+	bool BasePut(Bit32u key, TVal val)
 	{
 		if (len * 2 >= maxlen) Grow();
-		for (Bit32u key0 = Hash(str, str_limit, hash_init), key = (key0 ? key0 : 1), i = key;; i++)
+		for (Bit32u key1 = (key ? key : 1), i = key1;; i++)
 		{
-			if (!keys[i &= maxlen]) { len++; keys[i] = key; vals[i] = val; return; }
-			if (keys[i] == key) { vals[i] = val; return; }
+			if (!keys[i &= maxlen]) { len++; keys[i] = key1; vals[i] = val; return true; }
+			if (keys[i] == key1) { vals[i] = val; return false; }
 		}
 	}
 
-	bool Remove(const char* str, Bit32u str_limit = 0xFFFF, Bit32u hash_init = (Bit32u)0x811c9dc5)
+	bool BaseRemove(Bit32u key)
 	{
 		if (len == 0) return false;
-		for (Bit32u key0 = Hash(str, str_limit, hash_init), key = (key0 ? key0 : 1), i = key;; i++)
+		for (Bit32u key1 = (key ? key : 1), i = key1;; i++)
 		{
-			if (keys[i &= maxlen] == key)
+			if (keys[i &= maxlen] == key1)
 			{
 				keys[i] = 0;
 				len--;
-				while ((key = keys[i = (i + 1) & maxlen]) != 0)
+				while ((key1 = keys[i = (i + 1) & maxlen]) != 0)
 				{
-					for (Bit32u j = key;; j++)
+					for (Bit32u j = key1;; j++)
 					{
-						if (keys[j &= maxlen] == key) break;
-						if (!keys[j]) { keys[i] = 0; keys[j] = key; vals[j] = vals[i]; break; }
+						if (keys[j &= maxlen] == key1) break;
+						if (!keys[j]) { keys[i] = 0; keys[j] = key1; vals[j] = vals[i]; break; }
 					}
 				}
 				return true;
@@ -555,43 +572,16 @@ template <typename TVal> struct StringToPointerHashMap
 		}
 	}
 
-	void Clear() { memset(keys, len = 0, (maxlen + 1) * sizeof(Bit32u)); }
-
-	Bit32u Len() const { return len; }
-	Bit32u Capacity() const { return (maxlen ? maxlen + 1 : 0); }
-	TVal* GetAtIndex(Bit32u idx) const { return (keys[idx] ? vals[idx] : NULL); }
-
-	struct Iterator
-	{
-		Iterator(StringToPointerHashMap<TVal>& _map, Bit32u _index) : map(_map), index(_index - 1) { this->operator++(); }
-		StringToPointerHashMap<TVal>& map;
-		Bit32u index;
-		TVal* operator *() const { return map.vals[index]; }
-		bool operator ==(const Iterator &other) const { return index == other.index; }
-		bool operator !=(const Iterator &other) const { return index != other.index; }
-		Iterator& operator ++()
-		{
-			if (!map.maxlen) { index = 0; return *this; }
-			if (++index > map.maxlen) index = map.maxlen + 1;
-			while (index <= map.maxlen && !map.keys[index]) index++;
-			return *this;
-		}
-	};
-
-	Iterator begin() { return Iterator(*this, 0); }
-	Iterator end() { return Iterator(*this, (maxlen ? maxlen + 1 : 0)); }
-
-private:
 	Bit32u len, maxlen, *keys;
-	TVal** vals;
+	TVal* vals;
 
 	void Grow()
 	{
-		Bit32u oldMax = maxlen, oldCap = (maxlen ? oldMax + 1 : 0), *oldKeys = keys;
-		TVal **oldVals = vals;
+		Bit32u oldMax = maxlen, oldCap = (oldMax ? oldMax + 1 : 0), *oldKeys = keys;
+		TVal* oldVals = vals;
 		maxlen  = (maxlen ? maxlen * 2 + 1 : 15);
 		keys = (Bit32u*)calloc(maxlen + 1, sizeof(Bit32u));
-		vals = (TVal**)malloc((maxlen + 1) * sizeof(TVal*));
+		vals = (TVal*)malloc((maxlen + 1) * sizeof(TVal));
 		for (Bit32u i = 0; i != oldCap; i++)
 		{
 			if (!oldKeys[i]) continue;
@@ -604,9 +594,116 @@ private:
 		free(oldVals);
 	}
 
+	Bit32u NextIndex(Bit32u idx)
+	{
+		if (!maxlen) return 0;
+		if (++idx > maxlen) return maxlen + 1;
+		for (;;) if (keys[idx] || ++idx > maxlen) return idx;
+	}
+
 	// not copyable
-	StringToPointerHashMap(const StringToPointerHashMap&);
-	StringToPointerHashMap& operator=(const StringToPointerHashMap&);
+	BaseHashMap(const BaseHashMap&);
+	BaseHashMap& operator=(const BaseHashMap&);
+};
+
+struct BaseStringToPointerHashMap : public BaseHashMap<void*>
+{
+	static Bit32u Hash(const char* str, Bit32u str_limit = 0xFFFF, Bit32u hash_init = (Bit32u)0x811c9dc5)
+	{
+		for (const char* e = str + str_limit; *str && str != e;)
+			hash_init = ((hash_init * (Bit32u)0x01000193) ^ (Bit32u)*(str++));
+		return hash_init;
+	}
+	INLINE bool Remove(const char* str, Bit32u str_limit = 0xFFFF, Bit32u hash_init = (Bit32u)0x811c9dc5) { return BaseRemove(Hash(str, str_limit, hash_init)); }
+};
+
+template <typename TVal> struct StringToPointerHashMap : public BaseStringToPointerHashMap
+{
+	TVal* Get(const char* str, Bit32u str_limit = 0xFFFF, Bit32u hash_init = (Bit32u)0x811c9dc5) const
+	{
+		if (len == 0) return NULL;
+		for (Bit32u key = Hash(str, str_limit, hash_init), key1 = (key ? key : 1), i = key1;; i++)
+		{
+			if (keys[i &= maxlen] == key1) return (TVal*)vals[i];
+			if (!keys[i]) return NULL;
+		}
+	}
+	INLINE TVal* GetAtIndex(Bit32u idx) const { return (keys[idx] ? (TVal*)vals[idx] : NULL); }
+	INLINE bool Put(const char* str, TVal* val, Bit32u str_limit = 0xFFFF, Bit32u hash_init = (Bit32u)0x811c9dc5) { return BasePut(Hash(str, str_limit, hash_init), val); }
+	INLINE Iterator<TVal*> begin() { return Iterator<TVal*>(*this, 0); }
+	INLINE Iterator<TVal*> end() { return Iterator<TVal*>(*this, (maxlen ? maxlen + 1 : 0)); }
+};
+
+template <typename TVal> struct StringToObjectHashMap : public StringToPointerHashMap<TVal>
+{
+	TVal& Add(const char* str, Bit32u str_limit = 0xFFFF, Bit32u hash_init = (Bit32u)0x811c9dc5)
+	{
+		char* oldPtr = (storage.size() ? (char*)&storage[0] : NULL);
+		storage.emplace_back();
+		char* newPtr = (char*)&storage[0];
+		if (oldPtr != newPtr) for (Bit32u i = 0, j = (BaseHashMap<void*>::maxlen ? BaseHashMap<void*>::maxlen + 1 : 0); i != j; i++) if (BaseHashMap<void*>::keys[i]) BaseHashMap<void*>::vals[i] = (TVal*)((char*)BaseHashMap<void*>::vals[i] + (newPtr - oldPtr));
+		TVal& res = storage.back();
+		StringToPointerHashMap<TVal>::Put(str, &res, str_limit, hash_init);
+		return res;
+	}
+	INLINE const std::vector<TVal>& GetStorage() { return storage; }
+	INLINE int GetStorageIndex(const TVal* v) { return (int)(v - &storage[0]); }
+	private: std::vector<TVal> storage; bool Put(const char*, TVal*, Bit32u, Bit32u);
+};
+
+template <typename TVal> struct ValueHashMap : public BaseHashMap<TVal>
+{
+	INLINE TVal* Get(Bit32u key) const { return BHM::BaseGet(key); }
+	INLINE bool Put(Bit32u key, TVal val) { return BHM::BasePut(key, val); }
+	INLINE bool Remove(Bit32u key) { return BHM::BaseRemove(key); }
+	private: typedef BaseHashMap<TVal> BHM;
+};
+
+template <typename TVal> struct ValueEqualHashMap : public BaseHashMap<TVal>
+{
+	template <typename TEqFunc, typename TData, typename TOther> TVal* Get(Bit32u key, TEqFunc eqfn, TData& data, const TOther& other) const
+	{
+		if (BHM::len == 0) return NULL;
+		for (Bit32u key1 = (key ? key : 1), i = key1;; i++)
+		{
+			if (BHM::keys[i &= BHM::maxlen] == key1 && eqfn(data, BHM::vals[i], other)) return BHM::vals+i;
+			if (!BHM::keys[i]) return NULL;
+		}
+	}
+
+	template <typename TEqFunc, typename TData, typename TOther> void Put(Bit32u key, TEqFunc eqfn, TData& data, const TOther& other, TVal val)
+	{
+		if (BHM::len * 2 >= BHM::maxlen) BHM::Grow();
+		for (Bit32u key1 = (key ? key : 1), i = key1;; i++)
+		{
+			if (!BHM::keys[i &= BHM::maxlen]) { BHM::len++; BHM::keys[i] = key1; BHM::vals[i] = val; return; }
+			if (BHM::keys[i] == key1 && eqfn(data, BHM::vals[i], other)) { BHM::vals[i] = val; return; }
+		}
+	}
+
+	template <typename TEqFunc, typename TData, typename TOther> bool Remove(Bit32u key, TEqFunc eqfn, TData& data, const TOther& other)
+	{
+		if (BHM::len == 0) return false;
+		for (Bit32u key1 = (key ? key : 1), i = key1;; i++)
+		{
+			if (BHM::keys[i &= BHM::maxlen] == key1)
+			{
+				BHM::keys[i] = 0;
+				BHM::len--;
+				while ((key1 = BHM::keys[i = (i + 1) & BHM::maxlen]) != 0)
+				{
+					for (Bit32u j = key1;; j++)
+					{
+						if (BHM::keys[j &= BHM::maxlen] == key1 && eqfn(data, BHM::vals[i], other)) break;
+						if (!BHM::keys[j]) { BHM::keys[i] = 0; BHM::keys[j] = key1; BHM::vals[j] = BHM::vals[i]; break; }
+					}
+				}
+				return true;
+			}
+			if (!BHM::keys[i]) return false;
+		}
+	}
+	private: typedef BaseHashMap<TVal> BHM;
 };
 
 //Used to load drive images and archives from the native filesystem not a DOS_Drive
@@ -618,7 +715,7 @@ struct rawFile : public DOS_File
 	virtual bool Close() { if (refCtr == 1) open = false; return true; }
 	virtual bool Read(Bit8u* data, Bit16u* size) { *size = (Bit16u)fread(data, 1, *size, f); return open; }
 	virtual bool Write(Bit8u* data, Bit16u* size) { if (!OPEN_IS_WRITING(flags)) return false; *size = (Bit16u)fwrite(data, 1, *size, f); return (*size && open); }
-	virtual bool Seek(Bit32u* pos, Bit32u type) { fseek_wrap(f, *pos, type); *pos = (Bit32u)ftell_wrap(f); return open; }
+	virtual bool Seek(Bit32u* pos, Bit32u type) { fseek(f, (long)*pos, type); *pos = (Bit32u)ftell_wrap(f); return open; }
 	virtual bool Seek64(Bit64u* pos, Bit32u type) { fseek_wrap(f, *pos, type); *pos = (Bit64u)ftell_wrap(f); return open; }
 	virtual Bit16u GetInformation(void) { return (OPEN_IS_WRITING(flags) ? 0x40 : 0); }
 };
@@ -652,7 +749,8 @@ private:
 
 class zipDrive : public DOS_Drive {
 public:
-	zipDrive(DOS_File* zip, bool enter_solo_root_dir);
+	static DOS_Drive* MountWithDependencies(const char* path, std::string*& error_msg, bool enable_crc_check = false, bool enter_solo_root_dir = false, const char* dosc_path = NULL);
+	zipDrive(DOS_File* zip, bool enable_crc_check = false);
 	virtual ~zipDrive();
 	virtual bool FileOpen(DOS_File * * file, char * name,Bit32u flags);
 	virtual bool FileCreate(DOS_File * * file, char * name,Bit16u attributes);
@@ -675,6 +773,7 @@ public:
 	static void Uncompress(const Bit8u* src, Bit32u src_len, Bit8u* trg, Bit32u trg_len);
 private:
 	struct zipDriveImpl* impl;
+	INLINE zipDrive() {}
 };
 
 class unionDrive : public DOS_Drive {
@@ -697,7 +796,7 @@ public:
 	virtual bool GetFileAttr(char * name, Bit16u * attr);
 	virtual bool GetLongFileName(const char* name, char longname[256]);
 	virtual bool AllocationInfo(Bit16u * bytes_sector, Bit8u * sectors_cluster, Bit16u * total_clusters, Bit16u * free_clusters);
-	virtual bool GetShadows(DOS_Drive*& a, DOS_Drive*& b);
+	virtual DOS_Drive* GetShadow(int n, bool only_owned);
 	virtual Bit8u GetMediaByte(void);
 	virtual bool isRemote(void);
 	virtual bool isRemovable(void);
@@ -708,7 +807,8 @@ private:
 
 class patchDrive : public DOS_Drive {
 public:
-	patchDrive(DOS_Drive* under, bool autodelete_under, DOS_File* patchzip = NULL);
+	patchDrive();
+	void AddLayer(DOS_Drive& under, bool autodelete_under, DOS_File* patchzip = NULL, bool enable_crc_check = false, bool is_final = false);
 	virtual ~patchDrive();
 	virtual bool FileOpen(DOS_File * * file, char * name,Bit32u flags);
 	virtual bool FileCreate(DOS_File * * file, char * name,Bit16u attributes);
@@ -722,14 +822,46 @@ public:
 	virtual bool FindNext(DOS_DTA & dta);
 	virtual bool FileStat(const char* name, FileStat_Block * const stat_block);
 	virtual bool GetFileAttr(char * name, Bit16u * attr);
+	virtual bool GetLongFileName(const char* name, char longname[256]);
 	virtual bool AllocationInfo(Bit16u * bytes_sector, Bit8u * sectors_cluster, Bit16u * total_clusters, Bit16u * free_clusters);
-	virtual bool GetShadows(DOS_Drive*& a, DOS_Drive*& b);
+	virtual DOS_Drive* GetShadow(int n, bool only_owned);
+	virtual Bit8u GetMediaByte(void);
+	virtual bool isRemote(void);
+	virtual bool isRemovable(void);
+	virtual Bits UnMount(void);
+
+	static std::string dos_yml;
+	static StringToObjectHashMap<std::string> variants;
+	static void ActivateVariant(int variant_number);
+private:
+	struct patchDriveImpl* impl;
+};
+
+class mirrorDrive : public DOS_Drive {
+public:
+	mirrorDrive(DOS_Drive& under, bool autodelete_under, const char* mirrorFrom = NULL, const char* mirrorTo = NULL);
+	virtual ~mirrorDrive();
+	virtual bool FileOpen(DOS_File * * file, char * name,Bit32u flags);
+	virtual bool FileCreate(DOS_File * * file, char * name,Bit16u attributes);
+	virtual bool Rename(char * oldname,char * newname);
+	virtual bool FileUnlink(char * name);
+	virtual bool FileExists(const char* name);
+	virtual bool RemoveDir(char * dir);
+	virtual bool MakeDir(char * dir);
+	virtual bool TestDir(char * dir);
+	virtual bool FindFirst(char * dir, DOS_DTA & dta, bool fcb_findfirst=false);
+	virtual bool FindNext(DOS_DTA & dta);
+	virtual bool FileStat(const char* name, FileStat_Block * const stat_block);
+	virtual bool GetFileAttr(char * name, Bit16u * attr);
+	virtual bool GetLongFileName(const char* name, char longname[256]);
+	virtual bool AllocationInfo(Bit16u * bytes_sector, Bit8u * sectors_cluster, Bit16u * total_clusters, Bit16u * free_clusters);
+	virtual DOS_Drive* GetShadow(int n, bool only_owned);
 	virtual Bit8u GetMediaByte(void);
 	virtual bool isRemote(void);
 	virtual bool isRemovable(void);
 	virtual Bits UnMount(void);
 private:
-	struct patchDriveImpl* impl;
+	struct mirrorDriveImpl* impl;
 };
 
 #endif

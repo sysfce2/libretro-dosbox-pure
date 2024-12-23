@@ -573,12 +573,10 @@ bool DOS_OpenFile(char const * name,Bit8u flags,Bit16u * entry,bool fcb) {
 #ifndef C_DBP_LIBRETRO
 		if (dos.errorcode) return false;
 #else
-		if (dos.errorcode)
-		{
-			// Make sure none of the drive implementations sets an errorcode but still succeeds
-			if (!exists) return false;
-			DBP_ASSERT(false);
-		}
+		//DBP: Abort only for invalid access code (unlike vanilla DOSBox which leads to errors in many programs for example Windows 3.11 install)
+		else if (dos.errorcode == DOSERR_ACCESS_CODE_INVALID) return false;
+		//DBP: Make sure none of the drive implementations sets an errorcode but still succeeds
+		DBP_ASSERT(!dos.errorcode || !exists);
 #endif
 		dos.errorcode=olderror;
 	}
@@ -1342,6 +1340,23 @@ bool DOS_GetFileDate(Bit16u entry, Bit16u* otime, Bit16u* odate) {
 	}
 	*otime = Files[handle]->time;
 	*odate = Files[handle]->date;
+	return true;
+}
+
+//DBP: Added for date and time modification support
+bool DOS_SetFileDate(Bit16u entry, Bit16u _time, Bit16u _date) {
+	Bit32u handle=RealHandle(entry);
+	if (handle>=DOS_FILES) {
+		DOS_SetError(DOSERR_INVALID_HANDLE);
+		return false;
+	};
+	if (!Files[handle]) {
+		DOS_SetError(DOSERR_INVALID_HANDLE);
+		return false;
+	};
+	Files[handle]->time = _time;
+	Files[handle]->date = _date;
+	Files[handle]->newtime = true;
 	return true;
 }
 

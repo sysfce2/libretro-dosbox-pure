@@ -28,13 +28,7 @@ struct Memory_Entry
 protected:
 	Memory_Entry(Bit16u _attr, const char* _name, Bit16u _date = 0, Bit16u _time = 0) : date(_date), time(_time), attr(_attr)
 	{
-		if (date == 0 && time == 0)
-		{
-			time_t curtime = ::time(NULL);
-			tm* t = localtime(&curtime);
-			time = (t ? DOS_PackTime((Bit16u)t->tm_hour,(Bit16u)t->tm_min,(Bit16u)t->tm_sec) : 0);
-			date = (t ? DOS_PackDate((Bit16u)(t->tm_year+1900),(Bit16u)(t->tm_mon+1),(Bit16u)t->tm_mday) : 0);
-		}
+		if (date == 0 && time == 0) SetTimeNow();
 		SetName(_name);
 	}
 	~Memory_Entry() {}
@@ -49,6 +43,13 @@ public:
 		size_t namesize = strlen(_name) + 1;
 		if (namesize > sizeof(name)) { DBP_ASSERT(false); namesize = sizeof(name); }
 		memcpy(name, _name, namesize);
+	}
+	void SetTimeNow()
+	{
+		time_t curtime = ::time(NULL);
+		tm* t = localtime(&curtime);
+		time = (t ? DOS_PackTime((Bit16u)t->tm_hour,(Bit16u)t->tm_min,(Bit16u)t->tm_sec) : 0);
+		date = (t ? DOS_PackDate((Bit16u)(t->tm_year+1900),(Bit16u)(t->tm_mon+1),(Bit16u)t->tm_mday) : 0);
 	}
 
 	Bit16u date;
@@ -69,7 +70,7 @@ struct Memory_File : Memory_Entry
 
 struct Memory_Handle : public DOS_File
 {
-	Memory_Handle(Memory_File* _src, Bit32u _flags, const char* path) : mem_pos(0), src(_src)
+	Memory_Handle(Memory_File* _src, Bit32u _flags, const char* path) : mem_pos(0), wasmodified(false), src(_src)
 	{
 		_src->refs++;
 		date = _src->date;
@@ -104,6 +105,7 @@ struct Memory_Handle : public DOS_File
 	virtual bool Write(Bit8u* data, Bit16u* size)
 	{
 		if (!OPEN_IS_WRITING(flags)) return FALSE_SET_DOSERR(ACCESS_DENIED);
+		wasmodified = true;
 		if (!*size)
 		{
 			// file resizing/truncating
@@ -136,6 +138,17 @@ struct Memory_Handle : public DOS_File
 	{
 		if (refCtr == 1)
 		{
+			if (newtime)
+			{
+				src->time = time;
+				src->date = date;
+				newtime = false;
+			}
+			else if (wasmodified)
+			{
+				src->SetTimeNow();
+				wasmodified = false;
+			}
 			src->refs--;
 			open = false;
 			src = NULL;
@@ -149,6 +162,7 @@ struct Memory_Handle : public DOS_File
 	}
 
 	Bit32u mem_pos;
+	bool wasmodified;
 	Memory_File* src;
 };
 
@@ -235,9 +249,9 @@ bool memoryDrive::FileCreate(DOS_File * * file, char * path, Bit16u attributes)
 	Memory_Entry* e = impl->Get(path, &dir, &filename);
 	if (!dir) return FALSE_SET_DOSERR(PATH_NOT_FOUND);
 	if (e && e->IsDirectory()) return FALSE_SET_DOSERR(ACCESS_DENIED);
-	Memory_File* f = (e ? e->AsFile() : new Memory_File(attributes, filename));
-	f->mem_data.clear();
-	dir->entries.Put(filename, f);
+	Memory_File* f;
+	if (e) { f = e->AsFile(); f->mem_data.clear(); f->SetTimeNow(); }
+	else { f = new Memory_File(attributes, filename); dir->entries.Put(filename, f); }
 	*file = new Memory_Handle(f, OPEN_READWRITE, path_org);
 	return true;
 }
@@ -357,7 +371,7 @@ bool memoryDrive::FindNext(DOS_DTA & dta)
 	while (s.index < 2)
 	{
 		const char* dotted = (s.index++ ? ".." : ".");
-		if (!WildFileCmp(dotted, pattern) || (s.dir->attr & DOS_ATTR_VOLUME)) continue;
+		if (!DTA_PATTERN_MATCH(dotted, pattern) || (s.dir->attr & DOS_ATTR_VOLUME)) continue;
 		if (~attr & (Bit8u)s.dir->attr & (DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM)) continue;
 		dta.SetResult(dotted, 0, s.dir->date, s.dir->time, (Bit8u)s.dir->attr);
 		return true;
@@ -365,7 +379,7 @@ bool memoryDrive::FindNext(DOS_DTA & dta)
 	for (Bit32u i = s.dir->entries.Capacity() - (s.index++ - 2); i--; s.index++) // iterate reverse to better deal with "DEL *.*"
 	{
 		Memory_Entry* e = s.dir->entries.GetAtIndex(i);
-		if (!e || !WildFileCmp(e->name, pattern)) continue;
+		if (!e || !DTA_PATTERN_MATCH(e->name, pattern)) continue;
 		if (~attr & (Bit8u)e->attr & (DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM)) continue;
 		dta.SetResult(e->name, (e->IsFile() ? e->AsFile()->Size() : 0), e->date, e->time, (Bit8u)e->attr);
 		return true;

@@ -1295,7 +1295,14 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 	//Different sync values gives different scaling of the whole vertical range
 	//VGA monitor just seems to thighten or widen the whole vertical range
 	double pheight;
-	double target_total = (machine==MCH_EGA) ? 262.0 : 449.0;
+	//DBP: Previously, the target total lines used to be forced to 262 visible lines for all EGA modes, which
+	//     resulted in the wrong pixel ratio for (at least) EGA 640x350 text mode (should be ~1.37, was ~0.8).
+	//     However, we can't just always use 449 visible lines (like the pixel height calculations below seem
+	//     to want) as that then breaks the pixel ratio for EGA's 320x200@60Hz mode (marked as double-scanned).
+	//     The underlying issue seems to be some conflation of EGA and VGA behavior prior to this point, which
+	//     might require a larger refactor to sort out. For now, at least prevent the target total lines from
+	//     ending up less than the mode's vertical resolution (which clearly wouldn't make practical sense).
+	double target_total = (machine==MCH_EGA && vga.draw.double_scan) ? vtotal : 449.0;
 	Bitu sync = vga.misc_output >> 6;
 	switch ( sync ) {
 	case 0:		// This is not defined in vga specs,
@@ -1541,6 +1548,15 @@ void VGA_SetupDrawing(Bitu /*val*/) {
 			height/=2;
 		}
 	}
+
+#ifdef C_DBP_LIBRETRO
+	//DBP: Standards prior to VGA (e.g. CGA, EGA) don't do double-scanning
+	if (doubleheight && machine<MCH_VGA) {
+		doubleheight=false;
+		aspect_ratio *= 2.0;
+	}
+#endif
+
 	vga.draw.lines_total=height;
 	vga.draw.parts_lines=vga.draw.lines_total/vga.draw.parts_total;
 	vga.draw.line_length = width * ((bpp + 1) / 8);
@@ -1650,7 +1666,7 @@ void DBPSerialize_VGA_Draw(DBPArchive& ar)
 {
 	ar.SerializeExcept(vga.draw, vga.draw.linear_base, vga.draw.font, vga.draw.font_tables);
 	ar.SerializeSparse(vga.draw.font, sizeof(vga.draw.font));
-	ar.SerializeArray(TempLine);
+	ar.SerializeBytes(TempLine, (render.src.width <= 1280 ? 1280 : render.src.width) * 4); // backwards compatible
 	ar.SerializeArray(temp);
 	ar.Serialize(FontMask[1]);
 	ar.Serialize(bg_color_index);
@@ -1687,4 +1703,7 @@ void DBPSerialize_VGA_Draw(DBPArchive& ar)
 		vga.draw.font_tables[0] = (font_tables_idx_0 ? &vga.draw.font[(font_tables_idx_0 - 1) * 1024] : NULL);
 		vga.draw.font_tables[1] = (font_tables_idx_1 ? &vga.draw.font[(font_tables_idx_1 - 1) * 1024] : NULL);
 	}
+	
+	if (ar.mode == DBPArchive::MODE_ZERO)
+		vga.draw.linear_base = NULL;
 }

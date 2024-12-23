@@ -45,7 +45,7 @@ else ifneq (,$(findstring ios,$(platform)))
   endif
   OUTNAME := dosbox_pure_libretro_ios.dylib
   MINVERSION :=
-  COMMONFLAGS += -DDISABLE_DYNAREC=1
+  COMMONFLAGS += -DDISABLE_DYNAREC=1 -DDBP_IOS
   ifeq ($(platform),ios-arm64)
     CXX     = c++ -arch arm64 -isysroot $(IOSSDK)
   else
@@ -123,7 +123,7 @@ else ifeq ($(platform),wiiu)
   OUTNAME := dosbox_pure_libretro_wiiu.a
   CXX     := $(DEVKITPPC)/bin/powerpc-eabi-g++
   AR      := $(DEVKITPPC)/bin/powerpc-eabi-ar
-  COMMONFLAGS += -DGEKKO -DWIIU -DHW_RVL -mcpu=750 -meabi -mhard-float
+  COMMONFLAGS += -DWIIU -DHW_RVL -mcpu=750 -meabi -mhard-float
   COMMONFLAGS += -U__INT32_TYPE__ -U__UINT32_TYPE__ -D__INT32_TYPE__=int -D__POWERPC__ -D__ppc__ -DMSB_FIRST -DWORDS_BIGENDIAN=1 -DGX_PTHREAD_LEGACY
   STATIC_LINKING = 1
 else ifeq ($(platform),libnx)
@@ -156,8 +156,10 @@ else
   COMMONFLAGS += -pthread
   ifeq ($(CPUFLAGS),)
     # ARM optimizations
-    PROCCPU := $(shell cat /proc/cpuinfo))
-    ifneq ($(and $(filter ARMv7,$(PROCCPU)),$(filter neon,$(PROCCPU))),)
+    UNAMEM := $(shell uname -m))
+    ifeq ($(UNAMEM),aarch64)
+      CPUFLAGS := -DPAGESIZE=$(or $(shell getconf PAGESIZE),4096)
+    else ifeq ($(UNAMEM),armv7l)
       CPUFLAGS := -marm -mcpu=cortex-a72 -mfpu=neon-fp-armv8 -mfloat-abi=hard -ffast-math
     else ifeq ($(ARM_RPI4), 1)
       CPUFLAGS := -marm -mcpu=cortex-a72 -mfpu=neon-fp-armv8 -mfloat-abi=hard -ffast-math

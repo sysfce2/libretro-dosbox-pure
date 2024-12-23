@@ -105,6 +105,7 @@ typedef struct FPU_rec {
 
 
 extern FPU_rec fpu;
+extern Bit64s fpu_r64s[9];
 
 #define TOP fpu.top
 #define STV(i)  ( (fpu.top+ (i) ) & 7 )

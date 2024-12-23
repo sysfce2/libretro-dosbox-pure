@@ -81,12 +81,13 @@ public:
 		source[0] = '\0';
 	}
 
-	bool IsRedirect() { return type != TDELETE; }
-	bool IsDelete()   { return type == TDELETE; }
-	Type  RedirectType()   { DBP_ASSERT(type != TDELETE); return (Type)type; }
-	Bit8u RedirectDirLen() { DBP_ASSERT(type != TDELETE); return target_lastslash; }
-	char* RedirectTarget() { DBP_ASSERT(type != TDELETE); return target; }
-	char* RedirectSource() { DBP_ASSERT(type != TDELETE); return source; }
+	INLINE bool IsRedirect() { return type != TDELETE; }
+	INLINE bool IsDelete()   { return type == TDELETE; }
+	INLINE Type  RedirectType()   { DBP_ASSERT(type != TDELETE); return (Type)type; }
+	INLINE Bit8u RedirectDirLen() { DBP_ASSERT(type != TDELETE); return target_lastslash; }
+	INLINE char* RedirectTarget() { DBP_ASSERT(type != TDELETE); return target; }
+	INLINE char* RedirectSource() { DBP_ASSERT(type != TDELETE); return source; }
+	INLINE char* DeleteTarget()   { DBP_ASSERT(type == TDELETE); return target; }
 
 	void  RedirectSetNewPath(const char* _newpath)
 	{
@@ -189,7 +190,7 @@ struct unionDriveImpl
 
 	bool ExistInOverOrUnder(char* path)
 	{
-		return (under->FileExists(path) || over->FileExists(path) || over->TestDir(path) || under->TestDir(path));
+		Bit16u tmp; return (under->GetFileAttr(path, &tmp) || over->GetFileAttr(path, &tmp));
 	}
 
 	bool UnionUnlink(DOS_Drive* drv, char* path, Union_Modification::Type type, const Bit16u save_errorcode)
@@ -198,25 +199,23 @@ struct unionDriveImpl
 		Union_Modification* m = modifications.Get(path);
 		if (m && m->IsDelete()) return FALSE_SET_DOSERR(FILE_NOT_FOUND);
 		if (m && m->IsRedirect() && m->RedirectType() != type) return FALSE_SET_DOSERR(FILE_NOT_FOUND);
+		ForceCloseFileAndScheduleSave(drv, path, (type == Union_Modification::TFILE));
 		if (m && m->IsRedirect())
 		{
-			ForceCloseFileAndScheduleSave(drv, path);
 			delete m;
-			bool in_under = (under->FileExists(path) || under->TestDir(path));
+			Bit16u tmp; bool in_under = under->GetFileAttr(path, &tmp);
 			if (in_under) modifications.Put(path, new Union_Modification(path)); //re-mark deletion
 			else modifications.Remove(path); //remove redirect
 			return TRUE_RESET_DOSERR;
 		}
 		if (type == Union_Modification::TFILE ? over->FileUnlink(path) : over->RemoveDir(path))
 		{
-			ForceCloseFileAndScheduleSave(drv, path);
-			bool in_under = (under->FileExists(path) || under->TestDir(path));
+			Bit16u tmp; bool in_under = under->GetFileAttr(path, &tmp);
 			if (in_under) modifications.Put(path, new Union_Modification(path)); //mark deletion
 			return TRUE_RESET_DOSERR;
 		}
 		if (type == Union_Modification::TFILE ? under->FileExists(path) : under->TestDir(path))
 		{
-			ForceCloseFileAndScheduleSave(drv, path);
 			modifications.Put(path, new Union_Modification(path)); //mark deletion
 			return TRUE_RESET_DOSERR;
 		}
@@ -238,7 +237,7 @@ struct unionDriveImpl
 	{
 		if (!writable || !*path) return FALSE_SET_DOSERR(ACCESS_DENIED);
 		Union_Modification* m = modifications.Get(path);
-		if (!m) return (can_overwrite || (!under->FileExists(path) && !under->TestDir(path)) || FALSE_SET_DOSERR(FILE_ALREADY_EXISTS));
+		if (!m) { Bit16u tmp; return (can_overwrite || !under->GetFileAttr(path, &tmp) || FALSE_SET_DOSERR(FILE_ALREADY_EXISTS)); }
 		if (!can_overwrite && m->IsRedirect()) return FALSE_SET_DOSERR(FILE_ALREADY_EXISTS);
 		delete m;
 		modifications.Remove(path);
@@ -289,9 +288,18 @@ struct unionDriveImpl
 		FILE* zip_file_h = fopen_wrap(save_file.c_str(), "rb");
 		if (!zip_file_h) return;
 
-		Loader l(new zipDrive(new rawFile(zip_file_h, false), false), this, strict_mode);
+		Loader l(new zipDrive(new rawFile(zip_file_h, false)), this, strict_mode);
 		const Bit16u save_errorcode = dos.errorcode;
 		DriveFileIterator(l.zip, Loader::LoadFiles, (Bitu)&l);
+
+		// Forget delete modifications that have been re-added as files/directories to the save ZIP
+		for (Union_Modification* m : modifications)
+		{
+			Bit16u tmp; if (!m->IsDelete() || !over->GetFileAttr(m->DeleteTarget(), &tmp)) continue;
+			modifications.Remove(m->DeleteTarget());
+			delete m;
+		}
+
 		dos.errorcode = save_errorcode;
 		delete l.zip; // calls fclose
 	}
@@ -303,84 +311,89 @@ struct unionDriveImpl
 		struct Saver
 		{
 			FILE* f;
-			DOS_Drive* drv;
+			DOS_Drive *over, *under;
 			Bit32u local_file_offset, save_size;
 			Bit16u file_count;
-			bool failed;
+			bool failed, write_mods;
 			std::vector<Bit8u> central_dir;
-			std::string mods;
+			std::string buf;
 
 			static void WriteFiles(const char* path, bool is_dir, Bit32u size, Bit16u date, Bit16u time, Bit8u attr, Bitu data)
 			{
 				Saver& s = *(Saver*)data;
-				Bit8u buf[4096];
-				Bit16u pathLen = (Bit16u)(strlen(path) + (is_dir ? 1 : 0));
-				Bit32u crc32 = 0, extAttr = (is_dir ? 0x10 : 0);
 
-				if (!is_dir && size)
+				// Read file data in both over and under drive to compare
+				bool under_match_size = false;
+				Bit32u under_crc32 = 0;
+				if (!is_dir && !s.write_mods)
 				{
-					fseek_wrap(s.f, 30 + pathLen, SEEK_CUR);
-					if (s.mods.size())
+					DOS_File* df;
+					if (s.under->FileOpen(&df, (char*)path, 0))
 					{
-						crc32 = DriveCalculateCRC32((Bit8u*)&s.mods[0], size, crc32);
-						s.failed |= !fwrite(&s.mods[0], size, 1, s.f);
-					}
-					else
-					{
-						// Write file and calculate CRC32 along the way
-						DOS_File* df = nullptr;
-						bool opened = s.drv->FileOpen(&df, (char*)path, 0);
-						DBP_ASSERT(opened);
+						Bit32u under_size = 0;
 						df->AddRef();
-						Bit32u remain = size;
-						for (Bit16u read; remain && df->Read(buf, &(read = sizeof(buf))) && read; remain -= read)
-						{
-							crc32 = DriveCalculateCRC32(buf, read, crc32);
-							s.failed |= !fwrite(buf, read, 1, s.f);
-						}
-						DBP_ASSERT(remain == 0);
-						df->Close();
-						delete df;
-						s.save_size += size;
+						df->Seek(&under_size, DOS_SEEK_END);
+						under_match_size = (under_size == size);
+						s.buf.clear();
+						ReadAndClose(df, s.buf, (under_match_size ? 0xFFFFFFFF : 0));
+						if (under_match_size && size) under_crc32 = DriveCalculateCRC32((Bit8u*)&s.buf[0], size);
 					}
-					fseek_wrap(s.f, s.local_file_offset, SEEK_SET);
+
+					bool opened = s.over->FileOpen(&df, (char*)path, 0);
+					DBP_ASSERT(opened);
+					s.buf.clear();
+					ReadAndClose(df, s.buf, 0xFFFFFFFF);
 				}
 
-				ZIP_WRITE_LE32(buf+ 0, 0x04034b50); // Local file header signature
-				ZIP_WRITE_LE16(buf+ 4, 0);          // Version needed to extract (minimum)
-				ZIP_WRITE_LE16(buf+ 6, 0);          // General purpose bit flag 
-				ZIP_WRITE_LE16(buf+ 8, 0);          // Compression method
-				ZIP_WRITE_LE16(buf+10, time);       // File last modification time
-				ZIP_WRITE_LE16(buf+12, date);       // File last modification date
-				ZIP_WRITE_LE32(buf+14, crc32);      // CRC-32 of uncompressed data
-				ZIP_WRITE_LE32(buf+18, size);       // Compressed size
-				ZIP_WRITE_LE32(buf+22, size);       // Uncompressed size
-				ZIP_WRITE_LE16(buf+26, pathLen);    // File name length
-				ZIP_WRITE_LE16(buf+28, 0);          // Extra field length
+				// If content matches, don't store in save file
+				Bit32u crc32 = (size ? DriveCalculateCRC32((Bit8u*)&s.buf[0], size) : 0);
+				if (under_match_size && under_crc32 == crc32) return;
 
-				//File name (with \ changed to /)
-				for (char* pIn = (char*)path, *pOut = (char*)(buf+30); *pIn; pIn++, pOut++)
+				// Don't write 0 sized files with .SWP ending (temporary swap files)
+				Bit16u pathLen = (Bit16u)(strlen(path) + (is_dir ? 1 : 0));
+				if (!size && !is_dir && pathLen > 4 && !memcmp(path + pathLen - 4, ".SWP", 4)) return;
+
+				// Generate local file header
+				Bit8u lfh[30 + DOS_PATHLENGTH + 8];
+				ZIP_WRITE_LE32(lfh+ 0, 0x04034b50); // Local file header signature
+				ZIP_WRITE_LE16(lfh+ 4, 0);          // Version needed to extract (minimum)
+				ZIP_WRITE_LE16(lfh+ 6, 0);          // General purpose bit flag 
+				ZIP_WRITE_LE16(lfh+ 8, 0);          // Compression method
+				ZIP_WRITE_LE16(lfh+10, time);       // File last modification time
+				ZIP_WRITE_LE16(lfh+12, date);       // File last modification date
+				ZIP_WRITE_LE32(lfh+14, crc32);      // CRC-32 of uncompressed data
+				ZIP_WRITE_LE32(lfh+18, size);       // Compressed size
+				ZIP_WRITE_LE32(lfh+22, size);       // Uncompressed size
+				ZIP_WRITE_LE16(lfh+26, pathLen);    // File name length
+				ZIP_WRITE_LE16(lfh+28, 0);          // Extra field length
+
+				// File name (with \ changed to /)
+				for (char* pIn = (char*)path, *pOut = (char*)(lfh+30); *pIn; pIn++, pOut++)
 					*pOut = (*pIn == '\\' ? '/' : *pIn);
 				if (is_dir)
-					buf[30 + pathLen - 1] = '/';
+					lfh[30 + pathLen - 1] = '/';
 
-				s.failed |= !fwrite(buf, 30 + pathLen, 1, s.f);
-				if (size) { fseek_wrap(s.f, size, SEEK_CUR); }
+				// Write local file header followed by file data
+				s.failed |= !fwrite(lfh, 30 + pathLen, 1, s.f);
+				if (size)
+				{
+					s.failed |= !fwrite(&s.buf[0], size, 1, s.f);
+					s.save_size += size;
+				}
 
+				// Generate central directory file header
 				size_t centralDirPos = s.central_dir.size();
 				s.central_dir.resize(centralDirPos + 46 + pathLen);
 				Bit8u* cd = &s.central_dir[0] + centralDirPos;
-
-				ZIP_WRITE_LE32(cd+0, 0x02014b50);         // Central directory file header signature 
-				ZIP_WRITE_LE16(cd+4, 0);                  // Version made by (0 = DOS)
-				memcpy(cd+6, buf+4, 26);                  // copy middle section shared with local file header
-				ZIP_WRITE_LE16(cd+32, 0);                 // File comment length
-				ZIP_WRITE_LE16(cd+34, 0);                 // Disk number where file starts
-				ZIP_WRITE_LE16(cd+36, 0);                 // Internal file attributes
-				ZIP_WRITE_LE32(cd+38, extAttr);           // External file attributes
+				ZIP_WRITE_LE32(cd+0, 0x02014b50);           // Central directory file header signature 
+				ZIP_WRITE_LE16(cd+4, 0);                    // Version made by (0 = DOS)
+				memcpy(cd+6, lfh+4, 26);                    // Copy middle section shared with local file header
+				ZIP_WRITE_LE16(cd+32, 0);                   // File comment length
+				ZIP_WRITE_LE16(cd+34, 0);                   // Disk number where file starts
+				ZIP_WRITE_LE16(cd+36, 0);                   // Internal file attributes
+				ZIP_WRITE_LE32(cd+38, (is_dir ? 0x10 : 0)); // External file attributes
 				ZIP_WRITE_LE32(cd+42, s.local_file_offset); // Relative offset of local file header
-				memcpy(cd + 46, buf + 30, pathLen);       // File name
-
+				memcpy(cd + 46, lfh + 30, pathLen);         // File name
 				s.local_file_offset += 30 + pathLen + size;
 				s.file_count++;
 			}
@@ -396,21 +409,25 @@ struct unionDriveImpl
 			impl->ScheduleSave(5000.f);
 			return;
 		}
-		s.drv = impl->over;
+		s.over = impl->over;
+		s.under = impl->under;
 		s.local_file_offset = s.save_size = 0;
 		s.file_count = 0;
-		s.failed = false;
-		DriveFileIterator(s.drv, Saver::WriteFiles, (Bitu)&s);
+		s.failed = s.write_mods = false;
+		DriveFileIterator(s.over, Saver::WriteFiles, (Bitu)&s);
 
-		for (StringToPointerHashMap<Union_Modification>::Iterator it = impl->modifications.begin(), end = impl->modifications.end(); it != end; ++it)
-			(*it)->Serialize(s.mods);
-		if (s.mods.size())
-			Saver::WriteFiles("FILEMODS.DBP", false, (Bit32u)s.mods.size(), 0, 0, 0, (Bitu)&s);
+		if (impl->modifications.Len())
+		{
+			s.write_mods = true;
+			s.buf.clear();
+			for (Union_Modification* m : impl->modifications)
+				m->Serialize(s.buf);
+			if (s.buf.size())
+				Saver::WriteFiles("FILEMODS.DBP", false, (Bit32u)s.buf.size(), 0, 0, 0, (Bitu)&s);
+		}
 
 		if (s.file_count)
-		{
 			s.failed |= !fwrite(&s.central_dir[0], s.central_dir.size(), 1, s.f);
-		}
 
 		Bit8u eocd[22];
 		ZIP_WRITE_LE32(eocd+ 0, 0x06054b50);                   // End of central directory signature
@@ -448,9 +465,9 @@ struct unionDriveImpl
 		dirty = true;
 	}
 
-	void ForceCloseFileAndScheduleSave(DOS_Drive* drv, const char* path)
+	void ForceCloseFileAndScheduleSave(DOS_Drive* drv, const char* path, bool isFile)
 	{
-		DriveForceCloseFile(drv, path);
+		if (isFile) DriveForceCloseFile(drv, path);
 		ScheduleSave();
 	}
 };
@@ -481,15 +498,20 @@ struct Union_WriteHandle : public DOS_File
 
 	virtual bool Close()
 	{
+		if (refCtr == 1)
+		{
+			if (newtime)
+			{
+				if (real_file) { real_file->time = time; real_file->date = date; real_file->newtime = true; }
+				newtime = false;
+			}
+			open = false;
+			if (real_file) { real_file->Close(); delete real_file; real_file = NULL; }
+		}
 		if (dirty)
 		{
 			impl->ScheduleSave();
 			dirty = false;
-		}
-		if (refCtr == 1)
-		{
-			open = false;
-			if (real_file) { real_file->Close(); delete real_file; real_file = NULL; }
 		}
 		return true;
 	}
@@ -722,7 +744,7 @@ bool unionDrive::Rename(char * oldpath, char * newpath)
 		const char *oldlastslash = strrchr(oldpath, '\\'), *newlastslash = strrchr(newpath, '\\');
 		if ((oldlastslash || newlastslash) && (oldlastslash - oldpath) != (newlastslash - newpath) && memcmp(oldpath, newpath, (newlastslash - newpath))) return FALSE_SET_DOSERR(ACCESS_DENIED);
 	}
-	impl->ForceCloseFileAndScheduleSave(this, oldpath);
+	impl->ForceCloseFileAndScheduleSave(this, oldpath, true);
 	if (new_m) //means (new_m->IsDelete())
 	{
 		delete new_m;
@@ -852,7 +874,7 @@ bool unionDrive::FindNext(DOS_DTA & dta)
 		while (s.step < 2)
 		{
 			const char* dotted = (s.step++ ? ".." : ".");
-			if (!WildFileCmp(dotted, pattern) || !s.dir_len) continue;
+			if (!DTA_PATTERN_MATCH(dotted, pattern) || !s.dir_len) continue;
 			FileStat_Block stat;
 			FileStat(s.dir, &stat); // both '.' and '..' return the stats from the current dir
 			if (~attr & (Bit8u)stat.attr & (DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM)) continue;
@@ -882,7 +904,7 @@ bool unionDrive::FindNext(DOS_DTA & dta)
 				dta.GetResult(dta_name, dta_size, dta_date, dta_time, dta_attr);
 				if (dta_attr & DOS_ATTR_VOLUME) continue;
 				if (dta_name[0] == '.' && dta_name[dta_name[1] == '.' ? 2 : 1] == '\0') continue;
-				if (impl->over->FileExists(dta_path) || impl->over->TestDir(dta_path)) continue;
+				Bit16u tmp; if (impl->over->GetFileAttr(dta_path, &tmp)) continue;
 				if (impl->modifications.Get(dta_name, DOS_NAMELENGTH_ASCII, s.dir_hash)) continue;
 				dta.SetDirID(my_dir_id);
 				return TRUE_RESET_DOSERR;
@@ -905,6 +927,8 @@ bool unionDrive::FindNext(DOS_DTA & dta)
 				dta.GetResult(dta_name, dta_size, dta_date, dta_time, dta_attr);
 				if (dta_attr & DOS_ATTR_VOLUME) continue;
 				if (dta_name[0] == '.' && dta_name[dta_name[1] == '.' ? 2 : 1] == '\0') continue;
+				Union_Modification* m = impl->modifications.Get(dta_name, DOS_NAMELENGTH_ASCII, s.dir_hash);
+				if (m && m->IsDelete()) { DBP_ASSERT(false); continue; } // a modified deleted file shouldn't exist in over after unionDriveImpl::ReadSaveFile
 				dta.SetDirID(my_dir_id);
 				return TRUE_RESET_DOSERR;
 			}
@@ -922,7 +946,7 @@ bool unionDrive::FindNext(DOS_DTA & dta)
 				if (!m || !m->IsRedirect()) continue;
 				if (m->RedirectDirLen() != s.dir_len) continue;
 				const char *redirect_target = m->RedirectTarget(), *redirect_newname = redirect_target + (s.dir_len ? s.dir_len + 1 : 0);
-				if (memcmp(redirect_target, s.dir, s.dir_len) || !WildFileCmp(redirect_newname, pattern)) continue;
+				if (memcmp(redirect_target, s.dir, s.dir_len) || !DTA_PATTERN_MATCH(redirect_newname, pattern)) continue;
 				FileStat_Block filestat;
 				if (!impl->under->FileStat(m->RedirectSource(), &filestat)) continue;
 				if (~attr & (Bit8u)filestat.attr & (DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM)) continue;
@@ -980,7 +1004,12 @@ bool unionDrive::AllocationInfo(Bit16u * _bytes_sector, Bit8u * _sectors_cluster
 	return true;
 }
 
-bool unionDrive::GetShadows(DOS_Drive*& a, DOS_Drive*& b) { a = impl->under; b = impl->over; return true; }
+DOS_Drive* unionDrive::GetShadow(int n, bool only_owned)
+{
+	if (n == 0 && only_owned && !impl->autodelete_over) n++;
+	return (n == 0 ? impl->over : ((n == 1 && (!only_owned || impl->autodelete_under)) ? impl->under : NULL));
+}
+
 Bit8u unionDrive::GetMediaByte(void) { return impl->over->GetMediaByte(); }
 bool unionDrive::isRemote(void) { return false; }
 bool unionDrive::isRemovable(void) { return false; }

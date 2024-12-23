@@ -314,6 +314,7 @@ public:
 				if (lastconfigdir.length())	temp_line = lastconfigdir + CROSS_FILESPLIT + temp_line;
 			}
 #endif
+#ifndef C_DBP_HAVE_FPATH_NOCASE
 			struct stat test;
 			//Win32 : strip tailing backslashes
 			//os2: some special drive check
@@ -377,6 +378,12 @@ public:
 				return;
 #endif
 			}
+#else
+			Cross::ResolveHomedir(temp_line);
+			bool path_is_dir;
+			if (!fpath_nocase(temp_line, &path_is_dir)) { WriteOut(MSG_Get("PROGRAM_MOUNT_ERROR_1"),temp_line.c_str()); return; }
+			if (!path_is_dir) { WriteOut(MSG_Get("PROGRAM_MOUNT_ERROR_2"),temp_line.c_str()); return; }
+#endif
 
 			if (temp_line[temp_line.size()-1]!=CROSS_FILESPLIT) temp_line+=CROSS_FILESPLIT;
 			Bit8u bit8size=(Bit8u) sizes[1];
@@ -710,9 +717,9 @@ private:
 		strcpy(test,"ems=false");
 		dos_sec->HandleInputline(test);
 #ifdef C_DBP_LIBRETRO
-		dos_sec->GetProp("umb")->OnChangedByConfigProgram();
-		dos_sec->GetProp("xms")->OnChangedByConfigProgram();
-		dos_sec->GetProp("ems")->OnChangedByConfigProgram();
+		dos_sec->GetProp("umb")->MarkFixed();
+		dos_sec->GetProp("xms")->MarkFixed();
+		dos_sec->GetProp("ems")->MarkFixed();
 #endif
 		dos_sec->ExecuteInit(false);
      }
@@ -801,6 +808,7 @@ public:
 #endif
 				if(usefile != NULL) {
 #ifdef C_DBP_ENABLE_DISKSWAP
+#error Old code, i is probably wrong, should be drive?
 					if(diskSwap[i] != NULL) delete diskSwap[i];
 					diskSwap[i] = new imageDisk(usefile, temp_line.c_str(), floppysize, false);
 					if (usefile_1==NULL) {
@@ -825,13 +833,9 @@ public:
 						first_img_path = temp_line;
 						usefile_1=disk;
 						rombytesize_1=rombytesize;
-						if (imageDiskList[0]) delete imageDiskList[0];
-						imageDiskList[0]=disk;
 					} else if (usefile_2==NULL) {
 						usefile_2=disk;
 						rombytesize_2=rombytesize;
-						if (imageDiskList[1]) delete imageDiskList[1];
-						imageDiskList[1]=disk;
 					} else {
 						delete disk;
 					}
@@ -850,6 +854,13 @@ public:
 		swapPosition = 0;
 
 		swapInDisks();
+#else
+		// assign to image disk list drive if not already mounted same file (which might also have a fatDrive in Drives[] array that is in use)
+		if (usefile_1 && strcmp(imageDiskList[drive-65]->diskname, first_img_path.c_str()))
+		{
+			if (imageDiskList[drive-65]) delete imageDiskList[0];
+			imageDiskList[drive-65]=usefile_1;
+		}
 #endif
 
 		if(imageDiskList[drive-65]==NULL) {
@@ -867,7 +878,7 @@ public:
 				if (cart_cmd!="") {
 					/* read cartridge data into buffer */
 #ifdef C_DBP_SUPPORT_DISK_MOUNT_DOSFILE
-					usefile_1->Read_Raw(rombuf, 0x200, rombytesize_1-0x200);
+					imageDiskList[drive-65]->Read_Raw(rombuf, 0x200, rombytesize_1-0x200);
 #else
 					fseek(usefile_1,0x200L, SEEK_SET);
 					fread(rombuf, 1, rombytesize_1-0x200, usefile_1);
@@ -903,8 +914,8 @@ public:
 						}
 						//fclose(usefile_1); //delete diskSwap closes the file
 #else
-						if (usefile_1) delete usefile_1; // clears imageDiskList[0]
-						if (usefile_2) delete usefile_2; // clears imageDiskList[1]
+						if (usefile_1) delete usefile_1; // clears imageDiskList[drive-65] if needed
+						if (usefile_2) delete usefile_2;
 #endif
 						return;
 					} else {
@@ -940,8 +951,8 @@ public:
 							}
 							//fclose(usefile_1); //Delete diskSwap closes the file
 #else
-							if (usefile_1) delete usefile_1; // clears imageDiskList[0]
-							if (usefile_2) delete usefile_2; // clears imageDiskList[1]
+							if (usefile_1) delete usefile_1; // clears imageDiskList[drive-65] if needed
+							if (usefile_2) delete usefile_2;
 #endif
 							return;
 						}
@@ -1030,8 +1041,8 @@ public:
 					}
 				}
 #else
-				if (usefile_1) delete usefile_1; // clears imageDiskList[0]
-				if (usefile_2) delete usefile_2; // clears imageDiskList[1]
+				if (usefile_1) delete usefile_1; // might clear imageDiskList[drive-65] if needed
+				if (usefile_2) delete usefile_2;
 #endif
 
 
@@ -1086,6 +1097,10 @@ public:
 			reg_eax = 0;
 			reg_edx = 0; //Head 0 drive 0
 			reg_ebx= 0x7c00; //Real code probably uses bx to load the image
+#ifndef C_DBP_ENABLE_DISKSWAP
+			if (usefile_1 && imageDiskList[drive-65]!=usefile_1) delete usefile_1; // was already mounted
+			if (usefile_2) delete usefile_2;
+#endif
 		}
 	}
 };

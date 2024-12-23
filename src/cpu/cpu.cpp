@@ -54,9 +54,9 @@ Bit32s CPU_Cycles = 0;
 Bit32s CPU_CycleLeft = 3000;
 Bit32s CPU_CycleMax = 3000;
 Bit32s CPU_OldCycleMax = 3000;
-Bit32s CPU_CyclePercUsed = 100;
 Bit32s CPU_CycleLimit = -1;
 #ifdef C_DBP_ENABLE_MAPPER
+Bit32s CPU_CyclePercUsed = 100;
 Bit32s CPU_CycleUp = 0;
 Bit32s CPU_CycleDown = 0;
 #endif
@@ -1584,12 +1584,14 @@ void CPU_SET_CRX(Bitu cr,Bitu value) {
 					CPU_CycleLeft=0;
 					CPU_Cycles=0;
 					CPU_OldCycleMax=CPU_CycleMax;
-					GFX_SetTitle(CPU_CyclePercUsed,-1,false);
 #ifdef C_DBP_ENABLE_MAPPER
+					GFX_SetTitle(CPU_CyclePercUsed,-1,false);
 					if(!printed_cycles_auto_info) {
 						printed_cycles_auto_info = true;
 						LOG_MSG("DOSBox has switched to max cycles, because of the setting: cycles=auto.\nIf the game runs too fast, try a fixed cycles amount in DOSBox's options.");
 					}
+#else
+					GFX_SetTitle(-1,-1,false);
 #endif
 				} else {
 					GFX_SetTitle(-1,-1,false);
@@ -2594,6 +2596,7 @@ void DBP_CPU_ModifyCycles(const char* val, const char* params)
 		} else {
 			CPU_AutoDetermineMode |= CPU_AUTODETERMINE_CYCLES;
 			CPU_CycleAutoAdjust = false;
+			CPU_CycleMax = 3000; // default when not overridden by DBP_SetRealModeCycles
 			void DBP_SetRealModeCycles();
 			DBP_SetRealModeCycles();
 		}
@@ -2603,6 +2606,13 @@ void DBP_CPU_ModifyCycles(const char* val, const char* params)
 		if (CPU_CycleMax < CPU_CYCLES_LOWER_LIMIT) CPU_CycleMax = CPU_CYCLES_LOWER_LIMIT;
 	}
 	CPU_CycleLeft = CPU_Cycles = 0;
+	const char* limit = strstr((params ? params : val), "limit ");
+	if (limit)
+	{
+		CPU_CycleLimit = atoi(limit + 6);
+		if (CPU_CycleLimit < CPU_CYCLES_LOWER_LIMIT) CPU_CycleLimit = -1;
+	}
+	else CPU_CycleLimit = -1;
 }
 
 #include <dbp_serialize.h>
@@ -2681,7 +2691,35 @@ void DBPSerialize_CPU(DBPArchive& ar)
 	#endif
 
 	if (ar.mode == DBPArchive::MODE_LOAD)
+	{
 		CPU_IODelayRemoved = 0;
+		if (cpu.pmode && (CPU_AutoDetermineMode & CPU_AUTODETERMINE_MASK)) // apply auto changes (similar to CPU_SET_CRX)
+		{
+			if (CPU_AutoDetermineMode & CPU_AUTODETERMINE_CYCLES)
+			{
+				CPU_CycleAutoAdjust = true;
+				CPU_CycleLeft = CPU_Cycles = 0;
+				CPU_OldCycleMax = CPU_CycleMax;
+			}
+			#if (C_DYNAMIC_X86)
+			if (cpudecoder != &CPU_Core_Dyn_X86_Run && (CPU_AutoDetermineMode & CPU_AUTODETERMINE_CORE)) { CPU_Core_Dyn_X86_Cache_Init(true); cpudecoder = &CPU_Core_Dyn_X86_Run; }
+			#elif (C_DYNREC)
+			if (cpudecoder != &CPU_Core_Dynrec_Run && (CPU_AutoDetermineMode & CPU_AUTODETERMINE_CORE)) { CPU_Core_Dynrec_Cache_Init(true); cpudecoder = &CPU_Core_Dynrec_Run; }
+			#endif
+			CPU_AutoDetermineMode <<= CPU_AUTODETERMINE_SHIFT;
+		}
+	}
+	else if (ar.mode == DBPArchive::MODE_ZERO)
+	{
+		// Reset static variables
+		CPU_Cycles = 0;
+		CPU_CycleLeft = CPU_CycleMax = CPU_OldCycleMax = 3000;
+		CPU_CycleLimit = -1;
+		CPU_IODelayRemoved = 0;
+		CPU_CycleAutoAdjust = CPU_SkipCycleAutoAdjust = false;
+		CPU_ArchitectureType = CPU_ARCHTYPE_MIXED;
+		CPU_AutoDetermineMode = CPU_extflags_toggle = CPU_PrefetchQueueSize = 0;
+	}
 }
 
 const char* DBP_CPU_GetDecoderName()

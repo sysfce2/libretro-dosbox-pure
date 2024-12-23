@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2023 Bernhard Schelling
+ *  Copyright (C) 2024 Bernhard Schelling
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -23,10 +23,14 @@
 #include <time.h>
 #include <vector>
 
+static Bit16s ActiveVariantIndex = -2;
+std::string patchDrive::dos_yml;
+StringToObjectHashMap<std::string> patchDrive::variants;
+
 struct Patch_Entry
 {
 protected:
-	Patch_Entry(Bit16u _attr, const char* _name, Bit16u _date, Bit16u _time) : date(_date), time(_time), attr(_attr)
+	Patch_Entry(Bit8u _layer, Bit16u _attr, const char* _name, Bit16u _date, Bit16u _time) : date(_date), time(_time), attr(_attr), layer(_layer)
 	{
 		size_t namesize = strlen(_name) + 1;
 		if (namesize > sizeof(name)) { DBP_ASSERT(false); namesize = sizeof(name); }
@@ -35,13 +39,14 @@ protected:
 	~Patch_Entry() {}
 
 public:
-	inline bool IsFile()      { return ((attr & DOS_ATTR_DIRECTORY) == 0); }
-	inline bool IsDirectory() { return ((attr & DOS_ATTR_DIRECTORY) != 0); }
-	inline struct Patch_File*      AsFile()      { return (Patch_File*)this;      }
-	inline struct Patch_Directory* AsDirectory() { return (Patch_Directory*)this; }
+	INLINE bool IsFile()      { return ((attr & DOS_ATTR_DIRECTORY) == 0); }
+	INLINE bool IsDirectory() { return ((attr & DOS_ATTR_DIRECTORY) != 0); }
+	INLINE struct Patch_File*      AsFile()      { return (Patch_File*)this;      }
+	INLINE struct Patch_Directory* AsDirectory() { return (Patch_Directory*)this; }
 
 	Bit16u date, time, attr;
-	char name[DOS_NAMELENGTH_ASCII];
+	Bit8u variantlen, layer;
+	char name[DOS_NAMELENGTH_ASCII], zippath[DOS_PATHLENGTH+1];
 };
 
 struct Patch_File : Patch_Entry
@@ -50,16 +55,15 @@ struct Patch_File : Patch_Entry
 	Bit32u refs;
 	enum EType { TYPE_RAW, TYPE_PATCH } type;
 	bool patched;
-	char patchpath[DOS_PATHLENGTH+1];
 
-	Patch_File(EType _type, Bit16u _attr, const char* filename, Bit16u _date, Bit16u _time) : Patch_Entry(_attr, filename, _date, _time), refs(0), type(_type), patched(false) { DBP_ASSERT(IsFile()); }
+	Patch_File(Bit8u _layer, EType _type, Bit16u _attr, const char* filename, Bit16u _date, Bit16u _time) : Patch_Entry(_layer, _attr, filename, _date, _time), refs(0), type(_type), patched(false) { DBP_ASSERT(IsFile()); }
 
 	inline Bit32u Size(DOS_Drive& under, zipDrive* patchzip)
 	{
 		if (type == TYPE_RAW)
 		{
 			FileStat_Block stat;
-			patchzip->FileStat(patchpath, &stat);
+			if (!patchzip->FileStat(zippath, &stat)) { DBP_ASSERT(false); return 0; }
 			return stat.size;
 		}
 
@@ -72,7 +76,7 @@ struct Patch_File : Patch_Entry
 	{
 		patched = true;
 		char underpath[DOS_PATHLENGTH+1];
-		strcpy(underpath, patchpath);
+		strcpy(underpath, zippath + variantlen);
 		char *lastslash = strrchr(underpath, '\\');
 		strcpy((lastslash ? lastslash + 1 : underpath), name);
 
@@ -95,19 +99,134 @@ struct Patch_File : Patch_Entry
 			}
 			static bool Read(DOS_File* df, Bit8u* p, Bit32u sz)
 			{
-				for (Bit16u read; sz; sz -= read, p += read) { read = (Bit16u)(sz > 0xFFFF ? 0xFFFF : sz); if (!df->Read(p, &read)) return false; }
+				for (Bit16u read; sz; sz -= read, p += read) { read = (Bit16u)(sz > 0xFFFF ? 0xFFFF : sz); if (!df->Read(p, &read) || !read) return false; }
+				return true;
+			}
+			static bool LoadFile(DOS_Drive& drv, char* path, std::vector<Bit8u>& res)
+			{
+				FileStat_Block stat;
+				DOS_File* df;
+				if (!drv.FileStat(path, &stat) || !drv.FileOpen(&df, path, 0)) return false;
+				res.resize(stat.size);
+				df->AddRef();
+				if (!Read(df, (stat.size ? &res[0] : NULL), stat.size)) return false;
+				df->Close();
+				delete df;
 				return true;
 			}
 		};
 
-		FileStat_Block stat;
-		DOS_File* df;
-		if (!under.FileStat(underpath, &stat) || !under.FileOpen(&df, underpath, 0)) { DBP_ASSERT(false); return; }
-		mem_data.resize(stat.size);
-		df->AddRef();
-		if (!Local::Read(df, (stat.size ? &mem_data[0] : NULL), stat.size)) { DBP_ASSERT(0); }
-		df->Close();
-		delete df;
+		struct XORPatch
+		{
+			static bool Process(DOS_Drive& underdrv, char* trgpath, std::vector<Bit8u>& res, DOS_File* xorf, Patch_File* self)
+			{
+				char basepath[DOS_PATHLENGTH]; Bit32u filesize, ofs; Bit8u b; Bit64u baseofs = 0, targsz = 0;
+				xorf->Seek(&(filesize = 0), DOS_SEEK_END); xorf->Seek(&(ofs = 4), DOS_SEEK_SET); // skip over header
+				for (; Local::GetU8(xorf, b);) { ++ofs; if ((basepath[ofs-5] = (char)(ofs == sizeof(basepath)+4 ? '\0' : b == '/' ? '\\' : b)) == '\0') break; } // read source path
+				for (Bit8u num = 0; Local::GetU8(xorf, b);) { baseofs |= (Bit64u)(b & 0x7F) << (7 * (num++)); ++ofs; if (b < 0x80) break; }
+				for (Bit8u num = 0; Local::GetU8(xorf, b);) { targsz  |= (Bit64u)(b & 0x7F) << (7 * (num++)); ++ofs; if (b < 0x80) break; }
+				if (baseofs > 0xFFFFFFFF || targsz > 0xFFFFFFFF) return false;
+
+				Bit8u defdrv = DOS_GetDefaultDrive(), oldcurdir = *Drives[defdrv]->curdir;
+				DOS_Drive* olddrv = Drives[defdrv];
+				Drives[defdrv] = &underdrv; *olddrv->curdir = '\0';
+				DOS_File* basef = FindAndOpenDosFile(basepath, NULL, NULL, trgpath);
+				Drives[defdrv] = olddrv; *olddrv->curdir = oldcurdir;
+				if (!basef) return false;
+				basef->Seek64(&baseofs, DOS_SEEK_SET);
+
+				res.resize((size_t)targsz);
+				Local::Read(xorf, &res[0], (filesize - ofs));
+				Bit8u buf[1024]; Bit16u bufp = 0, bufn = 0;
+				for (Bit8u& r : res)
+				{
+					if (bufp == bufn) // read more from base
+						{ bufp = 0; if (!basef->Read(buf, &(bufn = 1024)) || !bufn) { basef->Seek(&(ofs = 0), DOS_SEEK_SET); if (!basef->Read(buf, &(bufn = 1024)) || !bufn) break; } }
+					r ^= buf[bufp++];
+				}
+				self->time = basef->time;
+				self->date = basef->date;
+				basef->Close();
+				delete basef;
+				return (bufp != 0);
+			}
+		};
+
+		struct IPSPatch
+		{
+			static bool Process(std::vector<Bit8u>& in_data, DOS_File* df)
+			{
+				Bit32u ofs, trunc; Bit16u len, rlelen; Bit8u rlebyte;
+				df->Seek(&(ofs = 5), DOS_SEEK_SET); // skip over header
+				while (Local::GetU24(df, ofs))
+				{
+					if (ofs == 0x454f46) // EOF marker
+					{
+						if (Local::GetU24(df, trunc)) in_data.resize(trunc);
+						return true;
+					}
+					if (!Local::GetU16(df, len)) return false;
+					if (!len) // RLE
+					{
+						if (!Local::GetU16(df, rlelen) || !Local::GetU8(df, rlebyte)) return false;
+						if (ofs + rlelen > in_data.size()) in_data.resize(ofs + rlelen);
+						memset(&in_data[ofs], rlebyte, rlelen);
+					}
+					else
+					{
+						if (ofs + len > in_data.size()) in_data.resize(ofs + len);
+						df->Read(&in_data[ofs], &len);
+					}
+				}
+				return true; // no EOF marker but still success?
+			}
+		};
+
+		struct BPSPatch
+		{
+			static bool GetVarLenInt(DOS_File* df, Bit64u& res)
+			{
+				Bit8u x; Bit16u num = 1; Bit64u shift = 1; res = 0;
+				for (;;) { if (!df->Read(&x, &num) || num != 1) return false; res += (x & 0x7f) * shift; if (x & 0x80) return true; res += (shift <<= 7); }
+			}
+
+			static bool Process(std::vector<Bit8u>& in_data, DOS_File* df)
+			{
+				Bit32u ofs, dfLen; Bit64u sourceLen, targetLen, metaLen, data, len, outputOffset = 0, sourceRelativeOffset = 0, targetRelativeOffset = 0;
+				df->Seek(&(dfLen = 0), DOS_SEEK_END);
+				df->Seek(&(ofs = 4), DOS_SEEK_SET); // skip over header
+				if (!GetVarLenInt(df, sourceLen) || sourceLen != in_data.size() || !GetVarLenInt(df, targetLen) || !GetVarLenInt(df, metaLen) || metaLen > (Bit32u)-1) return false;
+				df->Seek(&(ofs = (Bit32u)metaLen), DOS_SEEK_CUR); // skip over meta data
+				std::vector<Bit8u> out_data;
+				out_data.resize((size_t)targetLen);
+				for (Bit8u *source = (sourceLen ? &in_data[0] : NULL), *target = (targetLen ? &out_data[0] : NULL), *p, *pEnd; df->Seek(&(ofs = 0), DOS_SEEK_CUR) && ofs < dfLen - 12; outputOffset += len)
+				{
+					if (!GetVarLenInt(df, data) || outputOffset + (len = ((data >> 2) + 1)) > targetLen) return false;
+					switch (data & 3)
+					{
+						case 0: // SourceRead
+							if (outputOffset + len > sourceLen) return false;
+							memcpy(&target[outputOffset], &source[outputOffset], (size_t)len);
+							break;
+						case 1: // TargetRead
+							if (len > (Bit32u)-1 || !Local::Read(df, &target[outputOffset], (Bit32u)len)) return false;
+							break;
+						case 2: // SourceCopy
+							if (!GetVarLenInt(df, data) || (sourceRelativeOffset += (Bit64s)(data >> 1) * ((data & 1) ? -1 : 1)) + len > sourceLen) return false;
+							memcpy(&target[outputOffset], &source[sourceRelativeOffset], (size_t)len);
+							sourceRelativeOffset += len;
+							break;
+						case 3: // TargetCopy
+							if (!GetVarLenInt(df, data) || (targetRelativeOffset += (Bit64s)(data >> 1) * ((data & 1) ? -1 : 1)) >= outputOffset) return false;
+							for (p = &target[outputOffset], pEnd = p + len; p != pEnd;) *(p++) = target[targetRelativeOffset++];
+							break;
+					}
+				}
+				if (outputOffset != targetLen) return false;
+				in_data.swap(out_data);
+				return true;
+			}
+		};
 
 		struct VCDiff
 		{
@@ -256,109 +375,34 @@ struct Patch_File : Patch_Entry
 					}
 				}
 				out_data.resize(out_pos);
-				std::swap(in_data, out_data);
+				in_data.swap(out_data);
 				return true;
 			}
 		};
 
-		struct IPSPatch
-		{
-			static bool Process(std::vector<Bit8u>& in_data, DOS_File* df)
-			{
-				Bit32u ofs, trunc; Bit16u len, rlelen; Bit8u rlebyte;
-				df->Seek(&(ofs = 5), DOS_SEEK_SET); // skip over header
-				while (Local::GetU24(df, ofs))
-				{
-					if (ofs == 0x454f46) // EOF marker
-					{
-						if (Local::GetU24(df, trunc)) in_data.resize(trunc);
-						return true;
-					}
-					if (!Local::GetU16(df, len)) return false;
-					if (!len) // RLE
-					{
-						if (!Local::GetU16(df, rlelen) || !Local::GetU8(df, rlebyte)) return false;
-						if (ofs + rlelen > in_data.size()) in_data.resize(ofs + rlelen);
-						memset(&in_data[ofs], rlebyte, rlelen);
-					}
-					else
-					{
-						if (ofs + len > in_data.size()) in_data.resize(ofs + len);
-						df->Read(&in_data[ofs], &len);
-					}
-				}
-				return true; // no EOF marker but still success?
-			}
-		};
-
-		struct BPSPatch
-		{
-			static bool GetVarLenInt(DOS_File* df, Bit64u& res)
-			{
-				Bit8u x; Bit16u num = 1; Bit64u shift = 1; res = 0;
-				for (;;) { if (!df->Read(&x, &num) || num != 1) return false; res += (x & 0x7f) * shift; if (x & 0x80) return true; res += (shift <<= 7); }
-			}
-
-			static bool Process(std::vector<Bit8u>& in_data, DOS_File* df)
-			{
-				Bit32u ofs, dfLen; Bit64u sourceLen, targetLen, metaLen, data, len, outputOffset = 0, sourceRelativeOffset = 0, targetRelativeOffset = 0;
-				df->Seek(&(dfLen = 0), DOS_SEEK_END);
-				df->Seek(&(ofs = 4), DOS_SEEK_SET); // skip over header
-				if (!GetVarLenInt(df, sourceLen) || sourceLen != in_data.size() || !GetVarLenInt(df, targetLen) || !GetVarLenInt(df, metaLen) || metaLen > (Bit32u)-1) return false;
-				df->Seek(&(ofs = (Bit32u)metaLen), DOS_SEEK_CUR); // skip over meta data
-				std::vector<Bit8u> out_data;
-				out_data.resize((size_t)targetLen);
-				for (Bit8u *source = (sourceLen ? &in_data[0] : NULL), *target = (targetLen ? &out_data[0] : NULL), *p, *pEnd; df->Seek(&(ofs = 0), DOS_SEEK_CUR) && ofs < dfLen - 12; outputOffset += len)
-				{
-					if (!GetVarLenInt(df, data) || outputOffset + (len = ((data >> 2) + 1)) > targetLen) return false;
-					switch (data & 3)
-					{
-						case 0: // SourceRead
-							if (outputOffset + len > sourceLen) return false;
-							memcpy(&target[outputOffset], &source[outputOffset], (size_t)len);
-							break;
-						case 1: // TargetRead
-							if (len > (Bit32u)-1 || !Local::Read(df, &target[outputOffset], (Bit32u)len)) return false;
-							break;
-						case 2: // SourceCopy
-							if (!GetVarLenInt(df, data) || (sourceRelativeOffset += (Bit64s)(data >> 1) * ((data & 1) ? -1 : 1)) + len > sourceLen) return false;
-							memcpy(&target[outputOffset], &source[sourceRelativeOffset], (size_t)len);
-							sourceRelativeOffset += len;
-							break;
-						case 3: // TargetCopy
-							if (!GetVarLenInt(df, data) || (targetRelativeOffset += (Bit64s)(data >> 1) * ((data & 1) ? -1 : 1)) >= outputOffset) return false;
-							for (p = &target[outputOffset], pEnd = p + len; p != pEnd;) *(p++) = target[targetRelativeOffset++];
-							break;
-					}
-				}
-				if (outputOffset != targetLen) return false;
-				std::swap(in_data, out_data);
-				return true;
-			}
-		};
-
-		if (!patchzip.FileOpen(&df, patchpath, 0)) { DBP_ASSERT(false); return; }
+		DOS_File* df;
+		if (!patchzip.FileOpen(&df, zippath, 0)) { DBP_ASSERT(false); return; }
 		df->AddRef();
 		Bit32u hdr = 0;
 		Local::GetU24(df, hdr);
 		bool success = false;
-		if (hdr == 0xd6c3c4) // VCDIFF file
+		if (hdr == 0x584f52) // XOR patch
+			success = XORPatch::Process(under, underpath, mem_data, df, this);
+		else if (!Local::LoadFile(under, underpath, mem_data))
+			success = false;
+		else if (hdr == 0x504154) // IPS file
+			success = IPSPatch::Process(mem_data, df);
+		else if (hdr == 0x425053) // BPS file
+			success = BPSPatch::Process(mem_data, df);
+		else if (hdr == 0xd6c3c4) // VCDIFF file
 		{
 			VCDiff* vcd = new VCDiff; // too large for stack
 			success = vcd->Process(mem_data, df);
 			delete vcd;
 		}
-		else if (hdr == 0x504154) // IPS file
-		{
-			success = IPSPatch::Process(mem_data, df);
-		}
-		else if (hdr == 0x425053) // BPS file
-		{
-			success = BPSPatch::Process(mem_data, df);
-		}
 		df->Close();
 		delete df;
-		if (!success) { DBP_ASSERT(false); LOG_MSG("[DOSBOX] ERROR: Failed to patch '%s' with invalid patch file '%s'", underpath, patchpath); }
+		if (!success) { DBP_ASSERT(false); LOG_MSG("[DOSBOX] ERROR: Failed to patch '%s' with invalid patch file '%s'", underpath, zippath); }
 	}
 };
 
@@ -441,86 +485,189 @@ struct Patch_Directory: Patch_Entry
 {
 	StringToPointerHashMap<Patch_Entry> entries;
 
-	Patch_Directory(Bit16u _attr, const char* dirname, Bit16u _date, Bit16u _time) : Patch_Entry(_attr, dirname, _date, _time) { DBP_ASSERT(IsDirectory()); }
+	Patch_Directory(Bit8u _layer, Bit16u _attr, const char* dirname, Bit16u _date, Bit16u _time) : Patch_Entry(_layer, _attr, dirname, _date, _time) { DBP_ASSERT(IsDirectory()); }
+
+	static void DeleteEntry(Patch_Entry* e) { if (e->IsDirectory()) delete e->AsDirectory(); else delete e->AsFile(); }
 
 	~Patch_Directory()
 	{
-		for (Patch_Entry* e : entries)
-		{
-			if (e->IsDirectory()) delete e->AsDirectory();
-			else delete e->AsFile();
-		}
+		for (Patch_Entry* e : entries) DeleteEntry(e);
 	}
+};
+
+struct Patch_Layer
+{
+	DOS_Drive& under;
+	zipDrive* patchzip;
+	bool autodelete_under;
+	Patch_Layer(DOS_Drive& _under, bool _autodelete_under, zipDrive* _patchzip) : under(_under), patchzip(_patchzip), autodelete_under(_autodelete_under) {}
 };
 
 struct Patch_Search
 {
+	StringToPointerHashMap<void> dones;
 	Patch_Directory* dir;
-	Bit32u index;
-	Bit16u over_id;
+	Patch_Layer* layer;
+	Bit32u dir_index;
+	Bit16u layer_id;
+	bool fcb_findfirst;
+	char dir_path[DOS_PATHLENGTH + 1];
 };
 
 struct patchDriveImpl
 {
 	Patch_Directory root;
 	StringToPointerHashMap<Patch_Directory> directories;
-	std::vector<Patch_Search> searches;
-	std::vector<Bit16u> free_search_ids;
-	DOS_Drive& under;
-	zipDrive* patchzip;
-	bool autodelete_under;
+	std::vector<Patch_Search*> searches;
+	std::vector<Patch_Layer> layers;
+	Patch_Layer *layer_top, *layer_bottom;
+	Bit8u IterateLayer;
+	bool IterateGetVariant;
+	bool IterateHadVariant;
 
-	patchDriveImpl(DOS_Drive& _under, bool _autodelete_under, DOS_File* _patchzip) : root(DOS_ATTR_VOLUME|DOS_ATTR_DIRECTORY, "", 0, 0), under(_under), patchzip(_patchzip ? new zipDrive(_patchzip, false) : NULL), autodelete_under(_autodelete_under)
-	{
-		DriveFileIterator(patchzip, LoadFiles, (Bitu)this);
-	}
+	patchDriveImpl() : root(255, DOS_ATTR_VOLUME|DOS_ATTR_DIRECTORY, "", 0, 0), layer_top(NULL), layer_bottom(NULL) { }
 
 	~patchDriveImpl()
 	{
-		if (patchzip) delete patchzip;
-		if (autodelete_under) delete &under;
+		for (Patch_Search* s : searches) delete s;
+		for (Patch_Layer& l : layers) 
+		{
+			if (l.patchzip) delete l.patchzip;
+			if (l.autodelete_under) delete &l.under;
+		}
+	}
+
+	static bool AppendYML(DOS_Drive* drv, const char* path = "DOS.YML")
+	{
+		DOS_File *df;
+		if (!drv->FileOpen(&df, (char*)path, OPEN_READ)) return false;
+		if (patchDrive::dos_yml.length()) patchDrive::dos_yml += '\n';
+		return ReadAndClose(df, patchDrive::dos_yml);
+	}
+
+	void Reload()
+	{
+		if (layers.empty()) { DBP_ASSERT(false); return; }
+		for (Patch_Entry* e : root.entries) Patch_Directory::DeleteEntry(e);
+		root.entries.Clear();
+		directories.Clear();
+
+		DBP_ASSERT(!layer_top || layer_top == &layers.back()); // fixed once first used
+		layer_top = &layers.back();
+		layer_bottom = &layers.front();
+		if (ActiveVariantIndex == -2) ActiveVariantIndex = -1; // because we fill out dos_yml for the default config now
+
+		Bit32u ignoreLayers = 0, layerLast = (Bit32u)(layer_top - layer_bottom);
+		for (IterateLayer = 0, IterateGetVariant = false;;)
+		{
+			if (!(ignoreLayers & (1 << IterateLayer)))
+			{
+				Patch_Layer& layer = layer_bottom[IterateLayer];
+				if (!IterateGetVariant) AppendYML(&layer.under);
+				IterateHadVariant = false;
+				DriveFileIterator(layer.patchzip, LoadFiles, (Bitu)this);
+				if (!IterateHadVariant) ignoreLayers |= (1 << IterateLayer);
+			}
+			if (IterateLayer++ == layerLast)
+			{
+				if (IterateGetVariant) break;
+				IterateLayer = 0;
+				IterateGetVariant = true;
+			}
+		}
+	}
+
+	static bool RootOrVariant(zipDrive& patchzip, const char*& in_out_path)
+	{
+		const char* path = in_out_path, *slash, *dirEnd;
+		if (path[0] != DBP_8DOT3_INVALID_CHAR || (dirEnd = ((slash = strchr(path, '\\')) == NULL ? path + strlen(path) : slash))[-1] != DBP_8DOT3_INVALID_CHAR) // check for [VARIANT]
+			return true; // not a [variant]
+
+		char base[DOS_NAMELENGTH_ASCII], full[256], *fullEnd;
+		if (slash) sprintf(base, "%.*s", (int)(slash - path), path); // zero terminate the directory name
+		if (!patchzip.GetLongFileName((slash ? base : path), full) || full[0] != '[' || (fullEnd = (full+strlen(full)))[-1] != ']')
+			return true; // not a [variant] after all
+
+		if (!slash) return false; // ignore, directory of variant, only care for files in it
+
+		if (const std::string* v = patchDrive::variants.Get(full + 1, (Bit32u)(fullEnd - 2 - full)))
+		{
+			if (patchDrive::variants.GetStorageIndex(v) != ActiveVariantIndex) return false; // inactive
+			in_out_path = slash + 1; // cut off variant
+			return true;
+		}
+		patchDrive::variants.Add(full + 1, (Bit32u)(fullEnd - 2 - full)).assign(full + 1, (size_t)(fullEnd - 2 - full));
+		return false; // ignore, variant not yet active
 	}
 
 	static void LoadFiles(const char* path, bool is_dir, Bit32u size, Bit16u date, Bit16u time, Bit8u attr, Bitu data)
 	{
 		patchDriveImpl& self = *(patchDriveImpl*)data;
-		
+		Patch_Layer& layer = self.layers[self.IterateLayer];
+
+		const char* orgpath = path, *ext = NULL;
+		if (!RootOrVariant(*layer.patchzip, path)) return; // ignore other variants
+
+		const bool isVariant = (path != orgpath);
+		if (self.IterateGetVariant != isVariant)
+		{
+			self.IterateHadVariant = isVariant;
+			return; // not looking for this in this iteration
+		}
+
+		if (!is_dir && (ext = strrchr(path, '.')) != NULL && *++ext == 'Y' && !strcmp(path, "DOS.YML"))
+		{
+			AppendYML(layer.patchzip, orgpath);
+			return; // DOS.YML of patch drives is not exposed to the DOS file system
+		}
+
 		const char* name;
 		Patch_Directory* dir = self.GetParentDir(path, &name);
 		if (!dir) return;
-		const char* ext = strrchr(name, '.');
 
-		FileStat_Block stat;
-		bool on_under = self.under.FileStat(path, &stat);
+		FileStat_Block stat = { size, time, date, attr }, dummystat;
+		char fullname[256], patchsrc[DOS_PATHLENGTH+1];
+		const char* underpath = path;
+
+		if (ext && (!strcmp(ext, "IPS") || !strcmp(ext, "BPS") || !strcmp(ext, "XDE") || !strcmp(ext, "VCD") || !strcmp(ext, "XOR")))
+		{
+			if (!layer.patchzip->GetLongFileName(orgpath, fullname)) strcpy(fullname, name);
+			int undernamelen = (int)(strrchr(fullname, '.') - fullname), dirlen = (int)(name - path);
+			if (undernamelen < 1 || undernamelen > DOS_NAMELENGTH) { LOG_MSG("[DOSBOX] ERROR: Patch file name '%s' too long", fullname); return; };
+
+			memcpy(patchsrc, path, dirlen);
+			memcpy(patchsrc + dirlen, fullname, undernamelen);
+			patchsrc[dirlen + undernamelen] = '\0';
+			underpath = patchsrc;
+		}
+
+		// ignore any patch files existing in the layers above
+		for (Patch_Layer* l = &layer; l != self.layer_top; l++)
+			if (l->under.FileStat(underpath, &dummystat))
+				return;
+
+		// Don't query under file stats for .XOR patches
+		if (!ext || ext[1] != 'O' /* from .XOR */) layer.under.FileStat(underpath, &stat);
 
 		Patch_Entry* e;
-		if (is_dir || (on_under && (stat.attr & DOS_ATTR_DIRECTORY)))
+		if (is_dir || (stat.attr & DOS_ATTR_DIRECTORY))
 		{
-			e = (on_under ? new Patch_Directory(stat.attr, name, stat.date, stat.time) : new Patch_Directory(attr, name, date, time));
+			if (dir->entries.Get(name)) return; // don't have a variant overwrite entire directories
+			e = new Patch_Directory(self.IterateLayer, stat.attr, name, stat.date, stat.time);
 			self.directories.Put(path, e->AsDirectory());
-		}
-		else if (ext && (!strcmp(ext + 1, "IPS") || !strcmp(ext + 1, "BPS") || !strcmp(ext + 1, "XDE") || !strcmp(ext + 1, "VCD")))
-		{
-			char fullname[256], underpath[DOS_PATHLENGTH+1];
-			if (!self.patchzip->GetLongFileName(path, fullname)) strcpy(fullname, name);
-			int undernamelen = (int)(strrchr(fullname, '.') - fullname), dirlen = (int)(name - path);
-			if (undernamelen < 1 || undernamelen > DOS_NAMELENGTH) return; // to be patched file name length longer than 8.3?
-
-			memcpy(underpath, path, dirlen);
-			memcpy(underpath + dirlen, fullname, undernamelen);
-			underpath[dirlen + undernamelen] = '\0';
-			if (dir->entries.Get(underpath + dirlen)) return; // already exists (raw or patched)
-			if (!self.under.FileStat(underpath, &stat)) { LOG_MSG("[DOSBOX] ERROR: Failed to open base file '%s' to patch with '%s'", underpath, fullname); return; }
-
-			e = new Patch_File(Patch_File::TYPE_PATCH, stat.attr, underpath + dirlen, stat.date, stat.time);
-			strcpy(e->AsFile()->patchpath, path);
 		}
 		else
 		{
-			if (dir->entries.Get(name)) return; // already exists (patched)
-			e = (on_under ? new Patch_File(Patch_File::TYPE_RAW, stat.attr, name, stat.date, stat.time) : new Patch_File(Patch_File::TYPE_RAW, attr, name, date, time));
-			strcpy(e->AsFile()->patchpath, path);
+			Patch_File::EType typ = (underpath == path ? Patch_File::TYPE_RAW : Patch_File::TYPE_PATCH);
+			const char*       nam = (underpath == path ? name : underpath + (name - path));
+			e = new Patch_File(self.IterateLayer, typ, stat.attr, nam, stat.date, stat.time);
+
+			if (Patch_Entry* existing = dir->entries.Get(e->name))
+				Patch_Directory::DeleteEntry(existing);
 		}
+
+		strcpy(e->zippath, orgpath);
+		e->variantlen = (Bit8u)(path - orgpath);
 		dir->entries.Put(e->name, e);
 	}
 
@@ -549,7 +696,14 @@ struct patchDriveImpl
 	}
 };
 
-patchDrive::patchDrive(DOS_Drive* under, bool autodelete_under, DOS_File* patchzip) : impl(new patchDriveImpl(*under, autodelete_under, patchzip)) { }
+patchDrive::patchDrive() : impl(new patchDriveImpl()) { }
+
+void patchDrive::AddLayer(DOS_Drive& under, bool autodelete_under, DOS_File* patchzip, bool enable_crc_check, bool is_final)
+{
+	impl->layers.emplace_back(under, autodelete_under, (patchzip ? new zipDrive(patchzip, enable_crc_check) : NULL));
+	if (impl->layers.size() == 1) label.SetLabel(under.GetLabel(), false, true);
+	if (is_final) impl->Reload();
+}
 
 patchDrive::~patchDrive()
 {
@@ -562,14 +716,20 @@ bool patchDrive::FileOpen(DOS_File * * file, char * name, Bit32u flags)
 	if (!OPEN_CHECK_ACCESS_CODE(flags)) return FALSE_SET_DOSERR(ACCESS_CODE_INVALID);
 	if (OPEN_IS_WRITING(flags)) return FALSE_SET_DOSERR(ACCESS_DENIED);
 	DOSPATH_REMOVE_ENDINGDOTS_KEEP(name);
-	Patch_Entry* e = impl->Get(name);
-	if (!e || e->IsDirectory()) return impl->under.FileOpen(file, name, flags);
-	if (e->AsFile()->type == Patch_File::TYPE_RAW)
-		return impl->patchzip->FileOpen(file, name, flags);
-	
-	if (!e->AsFile()->patched) e->AsFile()->DoPatch(impl->under, *impl->patchzip);
-	*file = new Patch_Handle(e->AsFile(), flags, name_org);
-	return true;
+	if (Patch_Entry* e = impl->Get(name))
+	{
+		if (e->IsDirectory()) return FALSE_SET_DOSERR(FILE_NOT_FOUND);
+		Patch_Layer& layer = impl->layers[e->layer];
+		if (e->AsFile()->type == Patch_File::TYPE_RAW)
+			return layer.patchzip->FileOpen(file, e->zippath, flags);
+		if (!e->AsFile()->patched) e->AsFile()->DoPatch(layer.under, *layer.patchzip);
+		*file = new Patch_Handle(e->AsFile(), flags, name_org);
+		return true;
+	}
+	for (Patch_Layer* l = impl->layer_top; l >= impl->layer_bottom; l--)
+		if (l->under.FileOpen(file, name, flags))
+			return true;
+	return false;
 }
 
 bool patchDrive::FileCreate(DOS_File * * file, char * path, Bit16u attributes)
@@ -590,8 +750,9 @@ bool patchDrive::FileUnlink(char * path)
 bool patchDrive::FileExists(const char* name)
 {
 	DOSPATH_REMOVE_ENDINGDOTS(name);
-	Patch_Entry* p = impl->Get(name);
-	return (p ? p->IsFile() : impl->under.FileExists(name));
+	if (Patch_Entry* p = impl->Get(name)) return p->IsFile();
+	for (Patch_Layer* l = impl->layer_bottom; l <= impl->layer_top; l++) if (l->under.FileExists(name)) return true;
+	return false;
 }
 
 bool patchDrive::RemoveDir(char* dir_path)
@@ -607,32 +768,34 @@ bool patchDrive::MakeDir(char* dir_path)
 bool patchDrive::TestDir(char* dir_path)
 {
 	DOSPATH_REMOVE_ENDINGDOTS(dir_path);
-	return (!dir_path[0] || impl->directories.Get(dir_path) || impl->under.TestDir(dir_path));
+	if (!dir_path[0]) return true;
+	if (Patch_Entry* p = impl->Get(dir_path)) return p->IsDirectory();
+	for (Patch_Layer* l = impl->layer_bottom; l <= impl->layer_top; l++) if (l->under.TestDir(dir_path)) return true;
+	return false;
 }
 
 bool patchDrive::FindFirst(char* dir_path, DOS_DTA & dta, bool fcb_findfirst)
 {
 	DOSPATH_REMOVE_ENDINGDOTS(dir_path);
-	const Bit16u save_errorcode = dos.errorcode;
+	if (!TestDir(dir_path)) return FALSE_SET_DOSERR(PATH_NOT_FOUND);
+
+	size_t dir_len = strlen(dir_path), snum;
+	if (dir_len >= sizeof(((Patch_Search*)0)->dir_path)) { DBP_ASSERT(false); return false; }
+	for (snum = 0; snum != impl->searches.size(); snum++) if (!impl->searches[snum]->dir && impl->searches[snum]->layer > impl->layer_top) break;
+	if (snum == impl->searches.size()) impl->searches.push_back(new Patch_Search());
+
+	dta.SetDirID((Bit16u)snum);
+	Patch_Search& s = *impl->searches[snum];
 	Patch_Directory* dir = (!dir_path[0] ? &impl->root : impl->directories.Get(dir_path));
-	Bit16u over_id = (impl->under.FindFirst(dir_path, dta, fcb_findfirst) ? dta.GetDirID() : 0xFFFF);
-	if (!dir && over_id == 0xFFFF) return FALSE_SET_DOSERR(PATH_NOT_FOUND);
-	dos.errorcode = save_errorcode;
+	s.dones.Clear();
+	s.dir = dir;
+	s.layer = impl->layer_bottom;
+	s.dir_index = (dir == &impl->root ? (Bit32u)2 : (Bit32u)0);
+	s.layer_id = 0xFFFF;
+	s.fcb_findfirst = fcb_findfirst;
+	memcpy(s.dir_path, dir_path, dir_len + 1); // with '\0' terminator
 
-	Patch_Search s = { dir, (over_id == 0xFFFF ? (Bit32u)0 : (Bit32u)2), over_id };
-	if (impl->free_search_ids.empty())
-	{
-		dta.SetDirID((Bit16u)impl->searches.size());
-		impl->searches.push_back(s);
-	}
-	else
-	{
-		dta.SetDirID(impl->free_search_ids.back());
-		impl->searches[impl->free_search_ids.back()] = s;
-		impl->free_search_ids.pop_back();
-	}
-
-	if (s.index || DriveFindDriveVolume(this, dir_path, dta, fcb_findfirst)) return true;
+	if (DriveFindDriveVolume(this, dir_path, dta, fcb_findfirst)) return true;
 	return FindNext(dta);
 }
 
@@ -640,79 +803,179 @@ bool patchDrive::FindNext(DOS_DTA & dta)
 {
 	const Bit16u my_dir_id = dta.GetDirID();
 	if (my_dir_id >= impl->searches.size()) return FALSE_SET_DOSERR(ACCESS_DENIED);
-	Patch_Search& s = impl->searches[my_dir_id];
-	if (s.index == 0xFFFFFFFF) return FALSE_SET_DOSERR(NO_MORE_FILES);
-
-	if (s.over_id != 0xFFFF) for (;;)
+	Patch_Search& s = *impl->searches[my_dir_id];
+	if (s.dir)
 	{
-		const Bit16u save_errorcode = dos.errorcode;
-		dta.SetDirID(s.over_id);
-		bool have_more = impl->under.FindNext(dta);
-		s.over_id = dta.GetDirID();
+		Bit8u attr;char pattern[DOS_NAMELENGTH_ASCII];
+		dta.GetSearchParams(attr,pattern);
+		while (s.dir_index < 2)
+		{
+			const char* dotted = (s.dir_index++ ? ".." : ".");
+			if (!DTA_PATTERN_MATCH(dotted, pattern) || (s.dir->attr & DOS_ATTR_VOLUME)) continue;
+			if (~attr & (Bit8u)s.dir->attr & (DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM)) continue;
+			dta.SetResult(dotted, 0, s.dir->date, s.dir->time, (Bit8u)s.dir->attr);
+			s.dones.Put(dotted, (void*)(size_t)-1);
+			return true;
+		}
+		while (s.dir_index++ - 2 < s.dir->entries.Capacity())
+		{
+			Patch_Entry* e = s.dir->entries.GetAtIndex(s.dir_index - 3);
+			if (!e || !DTA_PATTERN_MATCH(e->name, pattern)) continue;
+			if (~attr & (Bit8u)e->attr & (DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM)) continue;
+			Patch_Layer* file_layer = (e->IsFile() ? &impl->layers[e->layer] : NULL);
+			dta.SetResult(e->name, (file_layer ? e->AsFile()->Size(file_layer->under, file_layer->patchzip) : 0), e->date, e->time, (Bit8u)e->attr);
+			s.dones.Put(e->name, (void*)(size_t)-1);
+			return true;
+		}
+		s.dir = NULL;
+	}
+	const Bit16u save_errorcode = dos.errorcode;
+	while (s.layer <= impl->layer_top)
+	{
+		bool have_more;
+		if (s.layer_id == 0xFFFF)
+		{
+			have_more = s.layer->under.FindFirst(s.dir_path, dta, s.fcb_findfirst);
+		}
+		else
+		{
+			dta.SetDirID(s.layer_id);
+			have_more = s.layer->under.FindNext(dta);
+		}
+		s.layer_id = dta.GetDirID();
 		dta.SetDirID(my_dir_id);
 		dos.errorcode = save_errorcode;
-		if (!have_more) { s.over_id = 0xFFFF; break; }
-
+		if (!have_more) { s.layer_id = 0xFFFF; s.layer++; continue; }
 		char dta_name[DOS_NAMELENGTH_ASCII];Bit32u dta_size;Bit16u dta_date;Bit16u dta_time;Bit8u dta_attr;
 		dta.GetResult(dta_name, dta_size, dta_date, dta_time, dta_attr);
-		if ((dta_attr & DOS_ATTR_VOLUME) || (dta_name[0] == '.' && dta_name[dta_name[1] == '.' ? 2 : 1] == '\0') || !s.dir || !s.dir->entries.Get(dta_name))
+		if (!(dta_attr & DOS_ATTR_VOLUME) && s.dones.Put(dta_name, (void*)(size_t)-1))
 			return true;
 	}
-
-	Bit8u attr;char pattern[DOS_NAMELENGTH_ASCII];
-	dta.GetSearchParams(attr,pattern);
-	while (s.index < 2)
-	{
-		const char* dotted = (s.index++ ? ".." : ".");
-		if (!WildFileCmp(dotted, pattern) || (s.dir->attr & DOS_ATTR_VOLUME)) continue;
-		if (~attr & (Bit8u)s.dir->attr & (DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM)) continue;
-		dta.SetResult(dotted, 0, s.dir->date, s.dir->time, (Bit8u)s.dir->attr);
-		return true;
-	}
-	if (s.dir) while (s.index++ - 2 < s.dir->entries.Capacity())
-	{
-		Patch_Entry* e = s.dir->entries.GetAtIndex(s.index - 3);
-		if (!e || !WildFileCmp(e->name, pattern)) continue;
-		if (~attr & (Bit8u)e->attr & (DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM)) continue;
-		dta.SetResult(e->name, (e->IsFile() ? e->AsFile()->Size(impl->under, impl->patchzip) : 0), e->date, e->time, (Bit8u)e->attr);
-		return true;
-	}
-
-	s.index = 0xFFFFFFFF;
-	impl->free_search_ids.push_back(my_dir_id);
 	return FALSE_SET_DOSERR(NO_MORE_FILES);
 }
 
 bool patchDrive::FileStat(const char* name, FileStat_Block * const stat_block)
 {
 	DOSPATH_REMOVE_ENDINGDOTS(name);
-	Patch_Entry* p = impl->Get(name);
-	if (!p) return impl->under.FileStat(name, stat_block);
-	stat_block->attr = p->attr;
-	stat_block->size = (p->IsFile() ? p->AsFile()->Size(impl->under, impl->patchzip) : 0);
-	stat_block->date = p->date;
-	stat_block->time = p->time;
-	return true;
+	if (Patch_Entry* p = impl->Get(name))
+	{
+		Patch_Layer* file_layer = (p->IsFile() ? &impl->layers[p->layer] : NULL);
+		stat_block->attr = p->attr;
+		stat_block->size = (file_layer ? p->AsFile()->Size(file_layer->under, file_layer->patchzip) : 0);
+		stat_block->date = p->date;
+		stat_block->time = p->time;
+		return true;
+	}
+	for (Patch_Layer* l = impl->layer_top; l >= impl->layer_bottom; l--)
+		if (l->under.FileStat(name, stat_block))
+			return true;
+	return false;
 }
 
 bool patchDrive::GetFileAttr(char * name, Bit16u * attr)
 {
 	DOSPATH_REMOVE_ENDINGDOTS(name);
-	Patch_Entry* p = impl->Get(name);
-	if (!p) return impl->under.GetFileAttr(name, attr);
-	*attr = p->attr;
-	return true;
+	if (Patch_Entry* p = impl->Get(name)) { *attr = p->attr; return true; }
+	for (Patch_Layer* l = impl->layer_top; l >= impl->layer_bottom; l--)
+		if (l->under.GetFileAttr(name, attr))
+			return true;
+	return false;
+}
+
+bool patchDrive::GetLongFileName(const char* path, char longname[256])
+{
+	DOSPATH_REMOVE_ENDINGDOTS(path);
+	if (!*path) return false;
+	if (Patch_Entry* p = impl->Get(path))
+		if (p->IsDirectory() || p->AsFile()->type == Patch_File::TYPE_RAW)
+			return impl->layers[p->layer].patchzip->GetLongFileName(p->zippath, longname);
+	for (Patch_Layer* l = impl->layer_top; l >= impl->layer_bottom; l--)
+		if (l->under.GetLongFileName(path, longname))
+			return true;
+	return false;
 }
 
 bool patchDrive::AllocationInfo(Bit16u * _bytes_sector, Bit8u * _sectors_cluster, Bit16u * _total_clusters, Bit16u * _free_clusters)
 {
-	impl->under.AllocationInfo(_bytes_sector, _sectors_cluster, _total_clusters, _free_clusters);
+	impl->layer_bottom->under.AllocationInfo(_bytes_sector, _sectors_cluster, _total_clusters, _free_clusters);
 	*_free_clusters = 0;
 	return true;
 }
 
-bool patchDrive::GetShadows(DOS_Drive*& a, DOS_Drive*& b) { a = &impl->under; b = impl->patchzip; return true; }
-Bit8u patchDrive::GetMediaByte(void) { return 0xF8;  } //Hard Disk
+DOS_Drive* patchDrive::GetShadow(int n, bool only_owned)
+{
+	for (Patch_Layer* l = impl->layer_top; l >= impl->layer_bottom; l--)
+		if ((!only_owned || l->autodelete_under) && !(n--))
+			return &l->under;
+	return NULL;
+}
+
+Bit8u patchDrive::GetMediaByte(void) { return 0xF8; } //Hard Disk
 bool patchDrive::isRemote(void) { return false; }
 bool patchDrive::isRemovable(void) { return false; }
 Bits patchDrive::UnMount(void) { delete this; return 0;  }
+
+void patchDrive::ActivateVariant(int variant_number)
+{
+	int enabledVariantIndex = variant_number - 1;
+	if (ActiveVariantIndex == enabledVariantIndex) return;
+	ActiveVariantIndex = enabledVariantIndex;
+
+	struct Local
+	{
+		static void ReloadAll(DOS_Drive *drv)
+		{
+			if (patchDrive* pd = dynamic_cast<patchDrive*>(drv))
+			{
+				DBP_ASSERT(dos_yml.empty()); // it is assumed that there is only ever one drive with a YML
+				pd->impl->Reload();
+				return;
+			}
+			if (dynamic_cast<memoryDrive*>(drv)) return; // DOS.YML is not allowed to be put into save file
+			for (int n = 0;; n++)
+			{
+				if (DOS_Drive* shadow = drv->GetShadow(n, true)) ReloadAll(shadow);
+				else { if (n) return; break; }
+			}
+			DBP_ASSERT(dos_yml.empty()); // it is assumed that there is only ever one drive with a YML
+			patchDriveImpl::AppendYML(drv);
+		}
+	};
+	dos_yml.clear();
+	if (Drives['C'-'A']) Local::ReloadAll(Drives['C'-'A']);
+	return;
+}
+
+/*
+void patchDrive::Patch()
+{
+	const char* underpath = "VIKINGS.EXE";
+
+	FileStat_Block stat;
+	DOS_File* df;
+	if (!impl->under.FileStat(underpath, &stat) || !impl->under.FileOpen(&df, (char*)underpath, 0)) { DBP_ASSERT(false); return; }
+
+	Patch_File* e = new Patch_File(Patch_File::TYPE_PATCH, stat.attr, underpath, stat.date, stat.time);
+	e->patched = true;
+	e->mem_data.resize(stat.size);
+	df->AddRef();
+	struct Local
+	{
+		static bool Read(DOS_File* df, Bit8u* p, Bit32u sz)
+		{
+			for (Bit16u read; sz; sz -= read, p += read) { read = (Bit16u)(sz > 0xFFFF ? 0xFFFF : sz); if (!df->Read(p, &read)) return false; }
+			return true;
+		}
+	};
+	if (!Local::Read(df, (stat.size ? &e->mem_data[0] : NULL), stat.size)) { DBP_ASSERT(0); }
+	df->Close();
+	delete df;
+	impl->root.entries.Put(e->name, e);
+
+	//CHANGE EXE @ 0x3C3B FROM 0x75 0x7B to 0x90 0x90
+	DBP_ASSERT(e->mem_data[0x3C3B + 0] == 0x75);
+	DBP_ASSERT(e->mem_data[0x3C3B + 1] == 0x7B);
+	e->mem_data[0x3C3B + 0] = 0x90;
+	e->mem_data[0x3C3B + 1] = 0x90;
+}
+*/

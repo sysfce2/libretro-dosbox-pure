@@ -31,6 +31,9 @@
 #include "support.h"
 #include "serialport.h"
 
+// DBP: Added exit check to support shutdown/restart
+extern bool DBP_IsShuttingDown();
+
 DOS_Block dos;
 DOS_InfoBlock dos_infoblock;
 
@@ -247,7 +250,7 @@ static Bitu DOS_21Handler(void) {
 			Bit8u read=0;Bit8u c;Bit16u n=1;
 			if (!free) break;
 			free--;
-			for(;;) {
+			for(;!DBP_IsShuttingDown();) { // DBP: Added exit check to support shutdown/restart
 				DOS_ReadFile(STDIN,&c,&n);
 				if (n == 0)				// End of file
 					E_Exit("DOS:0x0a:Redirected input reached EOF");
@@ -290,8 +293,7 @@ static Bitu DOS_21Handler(void) {
 			Bit8u handle=RealHandle(STDIN);
 			if (handle!=0xFF && Files[handle] && Files[handle]->IsName("CON")) {
 				Bit8u c;Bit16u n;
-				extern bool DBP_IsShuttingDown(); // DBP: Added exit check to support shutdown/restart
-				while (DOS_GetSTDINStatus() && !DBP_IsShuttingDown()) {
+				while (DOS_GetSTDINStatus() && !DBP_IsShuttingDown()) { // DBP: Added exit check to support shutdown/restart
 					n=1;	DOS_ReadFile(STDIN,&c,&n);
 				}
 			}
@@ -904,8 +906,8 @@ static Bitu DOS_21Handler(void) {
 				CALLBACK_SCF(true);
 			}
 		} else if (reg_al==0x01) {
-			LOG(LOG_DOSMISC,LOG_ERROR)("DOS:57:Set File Date Time Faked");
-			CALLBACK_SCF(false);		
+			//DBP: Added for date and time modification support
+			CALLBACK_SCF(!DOS_SetFileDate(reg_bx,reg_cx,reg_dx));
 		} else {
 			LOG(LOG_DOSMISC,LOG_ERROR)("DOS:57:Unsupported subfunction %X",reg_al);
 		}
@@ -1094,7 +1096,8 @@ static Bitu DOS_21Handler(void) {
 				else len = mem_strlen(data); /* Is limited to 1024 */
 
 				if(len > DOS_COPYBUFSIZE - 1) E_Exit("DOS:0x65 Buffer overflow");
-				if(len) {
+				//DBP: Added else to please gcc
+				else if(len) {
 					MEM_BlockRead(data,dos_copybuf,len);
 					dos_copybuf[len] = 0;
 					//No upcase as String(0x21) might be multiple asciz strings
@@ -1402,9 +1405,13 @@ void DBPSerialize_DOS(DBPArchive& ar)
 
 	if (ar.mode == DBPArchive::MODE_LOAD)
 	{
-		if (old_dos_memseg != dos_memseg) ar.warnings |= DBPArchive::WARN_WRONGPROGRAM;
-		if (old_info_seg != dos_infoblock.seg) ar.warnings |= DBPArchive::WARN_WRONGPROGRAM;
-		if (old_other_memsystems != other_memsystems) ar.warnings |= DBPArchive::WARN_WRONGPROGRAM;
+		extern const char* RunningProgram;
+		if (strcmp(RunningProgram, "BOOT"))
+		{
+			if (old_dos_memseg != dos_memseg) ar.warnings |= DBPArchive::WARN_WRONGPROGRAM;
+			if (old_info_seg != dos_infoblock.seg) ar.warnings |= DBPArchive::WARN_WRONGPROGRAM;
+			if (old_other_memsystems != other_memsystems) ar.warnings |= DBPArchive::WARN_WRONGPROGRAM;
+		}
 		DOS_SetMemAllocStrategy(memallocstrategy);
 	}
 	else if (ar.mode == DBPArchive::MODE_ZERO)
