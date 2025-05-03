@@ -142,6 +142,20 @@ else ifeq ($(platform),gcw0)
   CPUFLAGS := -ffast-math -march=mips32r2 -mtune=mips32r2 -mhard-float -fexpensive-optimizations -frename-registers
   COMMONFLAGS += -pthread
   STRIPCMD := /opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/bin/strip --strip-all
+else ifeq ($(platform),miyoo)
+  OUTNAME := dosbox_pure_libretro.so
+  CXX     := /opt/miyoo/usr/bin/arm-linux-g++
+  LDFLAGS := -Wl,--gc-sections -fno-ident
+  CPUFLAGS := -ffast-math -march=armv5te -mtune=arm926ej-s
+  COMMONFLAGS += -pthread
+  STRIPCMD := /opt/miyoo/usr/arm-miyoo-linux-uclibcgnueabi/bin/strip --strip-all
+else ifeq ($(platform),retrofw)
+  OUTNAME := dosbox_pure_libretro.so
+  CXX     := /opt/retrofw-toolchain/usr/bin/mipsel-linux-g++
+  LDFLAGS := -Wl,--gc-sections -fno-ident
+  CPUFLAGS := -ffast-math -march=mips32 -mtune=mips32 -mhard-float -fexpensive-optimizations -frename-registers
+  COMMONFLAGS += -pthread
+  STRIPCMD := /opt/retrofw-toolchain/usr/mipsel-RetroFW-linux-uclibc/bin/strip --strip-all
 else ifneq ($(findstring Haiku,$(shell uname -s)),)
   OUTNAME := dosbox_pure_libretro.so
   LDFLAGS := -Wl,--gc-sections -fno-ident -lroot -lnetwork
