@@ -138,22 +138,22 @@ else ifeq ($(platform),gcw0)
   # You must used the toolchain built on or around 2014-08-20
   OUTNAME := dosbox_pure_libretro.so
   CXX     := /opt/gcw0-toolchain/usr/bin/mipsel-linux-g++
-  LDFLAGS := -Wl,--gc-sections -fno-ident
-  CPUFLAGS := -ffast-math -march=mips32r2 -mtune=mips32r2 -mhard-float -fexpensive-optimizations -frename-registers
+  LDFLAGS := -Wl,--gc-sections -fno-ident -Wl,--version-script=$(ROOT_PATH)/link.T
+  CPUFLAGS := -ffast-math -march=mips32r2 -mtune=mips32r2 -mhard-float -fexpensive-optimizations -frename-registers -fPIC
   COMMONFLAGS += -pthread
   STRIPCMD := /opt/gcw0-toolchain/usr/mipsel-gcw0-linux-uclibc/bin/strip --strip-all
 else ifeq ($(platform),miyoo)
   OUTNAME := dosbox_pure_libretro.so
   CXX     := /opt/miyoo/usr/bin/arm-linux-g++
-  LDFLAGS := -Wl,--gc-sections -fno-ident
-  CPUFLAGS := -ffast-math -march=armv5te -mtune=arm926ej-s
+  LDFLAGS := -Wl,--gc-sections -fno-ident -Wl,--version-script=$(ROOT_PATH)/link.T
+  CPUFLAGS := -ffast-math -march=armv5te -mtune=arm926ej-s -fPIC
   COMMONFLAGS += -pthread
   STRIPCMD := /opt/miyoo/usr/arm-miyoo-linux-uclibcgnueabi/bin/strip --strip-all
 else ifeq ($(platform),retrofw)
   OUTNAME := dosbox_pure_libretro.so
   CXX     := /opt/retrofw-toolchain/usr/bin/mipsel-linux-g++
-  LDFLAGS := -Wl,--gc-sections -fno-ident
-  CPUFLAGS := -ffast-math -march=mips32 -mtune=mips32 -mhard-float -fexpensive-optimizations -frename-registers
+  LDFLAGS := -Wl,--gc-sections -fno-ident -Wl,--version-script=$(ROOT_PATH)/link.T
+  CPUFLAGS := -ffast-math -march=mips32 -mtune=mips32 -mhard-float -fexpensive-optimizations -frename-registers -fPIC
   COMMONFLAGS += -pthread
   STRIPCMD := /opt/retrofw-toolchain/usr/mipsel-RetroFW-linux-uclibc/bin/strip --strip-all
 else ifneq ($(findstring Haiku,$(shell uname -s)),)
