@@ -1,6 +1,6 @@
 /*
  *  Copyright (C) 2002-2021  The DOSBox Team
- *  Copyright (C) 2020-2024  Bernhard Schelling
+ *  Copyright (C) 2020-2025  Bernhard Schelling
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -31,6 +31,7 @@
 bool WildFileCmp(const char * file, const char * wild);
 void Set_Label(char const * const input, char * const output, bool cdrom);
 
+#ifdef C_DBP_ENABLE_DRIVE_MANAGER
 class DriveManager {
 public:
 	static void AppendDisk(int drive, DOS_Drive* disk);
@@ -50,6 +51,7 @@ private:
 	
 	static int currentDrive;
 };
+#endif
 
 class localDrive : public DOS_Drive {
 public:
@@ -495,7 +497,8 @@ Bit8u DriveGetIndex(DOS_Drive* drv); // index in Drives array, returns DOS_DRIVE
 bool DriveForceCloseFile(DOS_Drive* drv, const char* name);
 bool DriveFindDriveVolume(DOS_Drive* drv, char* dir_path, DOS_DTA & dta, bool fcb_findfirst);
 Bit32u DBP_Make8dot3FileName(char* target, Bit32u target_len, const char* source, Bit32u source_len, bool& was_changed);
-DOS_File *FindAndOpenDosFile(char const* filename, Bit32u *bsize = NULL, bool* writable = NULL, char const* relative_to = NULL);
+DOS_File *FindAndOpenDosFile(char const* filename, Bit32u *bsize = NULL, bool* writable = NULL, char const* relative_to = NULL, std::string* out_resolve_path = NULL);
+bool DriveGetFileContent(DOS_Drive* drv, const char* path, std::vector<Bit8u>& out);
 bool ReadAndClose(DOS_File *df, std::string& out, Bit32u maxsize = 1024*1024);
 Bit16u DriveReadFileBytes(DOS_Drive* drv, const char* path, Bit8u* outbuf, Bit16u numbytes);
 bool DriveCreateFile(DOS_Drive* drv, const char* path, const Bit8u* buf, Bit32u numbytes);
@@ -648,6 +651,7 @@ template <typename TVal> struct StringToObjectHashMap : public StringToPointerHa
 	}
 	INLINE const std::vector<TVal>& GetStorage() { return storage; }
 	INLINE int GetStorageIndex(const TVal* v) { return (int)(v - &storage[0]); }
+	INLINE void Clear() { storage.clear(); StringToPointerHashMap<TVal>::Clear(); }
 	private: std::vector<TVal> storage; bool Put(const char*, TVal*, Bit32u, Bit32u);
 };
 
@@ -718,6 +722,7 @@ struct rawFile : public DOS_File
 	virtual bool Seek(Bit32u* pos, Bit32u type) { fseek(f, (long)*pos, type); *pos = (Bit32u)ftell_wrap(f); return open; }
 	virtual bool Seek64(Bit64u* pos, Bit32u type) { fseek_wrap(f, *pos, type); *pos = (Bit64u)ftell_wrap(f); return open; }
 	virtual Bit16u GetInformation(void) { return (OPEN_IS_WRITING(flags) ? 0x40 : 0); }
+	static rawFile* TryOpen(const char* path) { FILE* f = fopen_wrap(path, "rb"); return (f ? new rawFile(f, false) : NULL); }
 };
 
 class memoryDrive : public DOS_Drive {
@@ -832,7 +837,9 @@ public:
 
 	static std::string dos_yml;
 	static StringToObjectHashMap<std::string> variants;
-	static void ActivateVariant(int variant_number);
+	static bool ActivateVariant(int variant_number, bool ymlonly = false);
+	static void ResetVariants();
+	static std::vector<std::string> VariantConflictFiles(int variant_number, bool reset_conflicts);
 private:
 	struct patchDriveImpl* impl;
 };
